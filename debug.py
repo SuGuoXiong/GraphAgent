@@ -1,10 +1,6 @@
 """调试脚本 - 直接运行Agent进行测试"""
 import asyncio
 import sys
-from dotenv import load_dotenv
-
-# 加载环境变量
-load_dotenv()
 
 # 添加src到路径
 sys.path.insert(0, 'src')

@@ -2,28 +2,20 @@
 
 from __future__ import annotations
 
-import os
-from dotenv import load_dotenv
-
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
-from langchain_openai import ChatOpenAI
 
+from graph_agent.llm import LLMFactory
 from graph_agent.tools import ToolCenter
-
-load_dotenv()
 
 # 初始化工具中心并自动发现所有工具
 tool_center = ToolCenter()
 tool_center.auto_discover()
 tools = tool_center.get_langchain_tools()
 
-llm = ChatOpenAI(
-    model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-    openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
-    openai_api_base=os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1"),
-    temperature=0
-)
+# 从环境变量创建 LLM 实例（一行代码，自动处理所有提供商差异）
+llm_provider = LLMFactory.create_from_env()
+llm = llm_provider.get_chat_model()
 llm_with_tools = llm.bind_tools(tools)
 
 
