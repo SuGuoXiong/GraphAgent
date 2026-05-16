@@ -3,7 +3,7 @@ import os
 import pytest
 
 from graph_agent.graph import graph
-from graph_agent.message import create_user_message, agent_message_to_langchain
+from graph_agent.message import create_user_message
 
 pytestmark = pytest.mark.anyio
 
@@ -16,15 +16,8 @@ async def test_simple_agent_smoke() -> None:
     user_ga = create_user_message(
         "What is 19*3? Use tools if needed and answer with just the number."
     )
-    user_lc = agent_message_to_langchain(user_ga)
-    result = await graph.ainvoke(
-        {
-            "messages": [user_lc],
-            "ga_messages": [user_ga],
-            "cur_iteration": 0,
-            "max_iteration": 10,
-        }
-    )
+    result = await graph.ainvoke({"ga_messages": [user_ga]})
+
     # 验证两套消息列表长度一致
     assert len(result["messages"]) == len(result["ga_messages"])
     output_text = str(result["messages"][-1].content)
