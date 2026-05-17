@@ -32,6 +32,8 @@ class AnthropicProvider(LLMProvider):
                 "langchain-anthropic 包未安装。请运行: pip install langchain-anthropic"
             )
 
+        from graph_agent.llm.base import LLMFactory
+        callbacks = LLMFactory.get_callbacks()
         return ChatAnthropic(
             model=self.config.model,
             api_key=self.config.api_key,
@@ -39,6 +41,7 @@ class AnthropicProvider(LLMProvider):
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
             timeout=self.config.timeout,
+            callbacks=callbacks if callbacks else None,
         )
 
 

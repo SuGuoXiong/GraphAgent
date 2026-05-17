@@ -75,11 +75,23 @@ class LLMFactory:
     """LLM 实例工厂类。"""
 
     _providers: ClassVar[dict[str, Type[LLMProvider]]] = {}
+    _callbacks: ClassVar[list] = []
 
     @classmethod
     def register_provider(cls, name: str, provider_class: Type[LLMProvider]):
         """注册新的 LLM 提供商。"""
         cls._providers[name] = provider_class
+
+    @classmethod
+    def register_callback(cls, callback) -> None:
+        """注册 LangChain callback handler，所有 LLM 调用自动拦截。"""
+        if callback not in cls._callbacks:
+            cls._callbacks.append(callback)
+
+    @classmethod
+    def get_callbacks(cls) -> list:
+        """获取当前注册的所有 callback。"""
+        return list(cls._callbacks)
 
     @classmethod
     def create(cls, config: LLMConfig) -> LLMProvider:

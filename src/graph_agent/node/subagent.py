@@ -9,6 +9,7 @@ from graph_agent.message import (
     agent_messages_to_langchain,
 )
 from graph_agent.message.message_type import MessageType
+from graph_agent.tracer import get_tracer
 
 _tool_center = ToolCenter()
 _tool_center.auto_discover()
@@ -23,6 +24,11 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
     """
     from graph_agent.llm import LLMFactory
     from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+
+    get_tracer().trace_phase(
+        f"执行子任务 [{task_id}]", config.name,
+        task_description[:120],
+    )
 
     provider = LLMFactory.create_from_env()
     llm = provider.get_chat_model()
@@ -78,6 +84,8 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
     task_plan = state.get("task_plan")
     if not task_plan:
         return {}
+
+    get_tracer().trace_phase("子任务执行", "SubAgent", "串行执行所有就绪的子任务")
 
     loader = PromptLoader()
     sub_results = dict(state.get("sub_results", {}))

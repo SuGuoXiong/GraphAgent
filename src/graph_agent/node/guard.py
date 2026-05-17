@@ -14,6 +14,7 @@ from graph_agent.message import (
     agent_message_to_langchain,
 )
 from graph_agent.message.message_type import MessageType
+from graph_agent.tracer import get_tracer
 
 _prompt_loader = PromptLoader()
 
@@ -69,6 +70,8 @@ def _parse_json_response(text: str) -> dict:
 
 def _analyze_intent(state: OrchestrationState) -> dict:
     """意图识别阶段。"""
+    get_tracer().trace_phase("意图分析", "GuardAgent", "分析用户输入，判断问题类型与复杂度")
+
     system_prompt = _prompt_loader.load_with_context(
         "guard", "intent_analysis",
         conversation_context=_format_context(state.get("messages", [])),
@@ -88,6 +91,8 @@ def _analyze_intent(state: OrchestrationState) -> dict:
 
 def _review_plan(state: OrchestrationState) -> dict:
     """方案审核阶段。"""
+    get_tracer().trace_phase("方案审核", "GuardAgent", "审核 PlanAgent 制定的任务计划")
+
     task_plan = state.get("task_plan")
     system_prompt = _prompt_loader.load_with_context(
         "guard", "plan_review",
@@ -101,6 +106,11 @@ def _review_plan(state: OrchestrationState) -> dict:
     result = _parse_json_response(msg.content if isinstance(msg.content, str) else "")
 
     approved = result.get("approved", True)
+    decision = "通过" if approved else "驳回"
+    get_tracer().trace_decision(
+        "GuardAgent", f"方案审核{decision}", result.get("feedback", ""),
+    )
+
     return {
         "phase": OrchestrationPhase.TASK_EXECUTION if approved else OrchestrationPhase.PLAN_GENERATION,
         "plan_approved": approved,
@@ -113,6 +123,8 @@ def _review_plan(state: OrchestrationState) -> dict:
 
 def _review_result(state: OrchestrationState) -> dict:
     """结果验收阶段。"""
+    get_tracer().trace_phase("结果验收", "GuardAgent", "根据原始意图验收最终结果")
+
     sub_results = state.get("sub_results", {})
     final_result = "\n".join(f"{k}: {v}" for k, v in sub_results.items())
 
@@ -128,6 +140,11 @@ def _review_result(state: OrchestrationState) -> dict:
     result = _parse_json_response(msg.content if isinstance(msg.content, str) else "")
 
     approved = result.get("approved", True)
+    decision = "通过" if approved else "驳回"
+    get_tracer().trace_decision(
+        "GuardAgent", f"结果验收{decision}", result.get("feedback", ""),
+    )
+
     return {
         "phase": OrchestrationPhase.COMPLETED if approved else OrchestrationPhase.RESULT_SYNTHESIS,
         "result_approved": approved,

@@ -35,6 +35,8 @@ class OllamaProvider(LLMProvider):
                 "langchain-ollama 包未安装。请运行: pip install langchain-ollama"
             )
 
+        from graph_agent.llm.base import LLMFactory
+        callbacks = LLMFactory.get_callbacks()
         base_url = self.config.base_url or "http://localhost:11434"
         return ChatOllama(
             model=self.config.model,
@@ -42,6 +44,7 @@ class OllamaProvider(LLMProvider):
             temperature=self.config.temperature,
             num_predict=self.config.max_tokens,
             timeout=self.config.timeout,
+            callbacks=callbacks if callbacks else None,
         )
 
 

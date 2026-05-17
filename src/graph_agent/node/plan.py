@@ -17,6 +17,7 @@ from graph_agent.message import (
     agent_message_to_langchain,
 )
 from graph_agent.message.message_type import MessageType
+from graph_agent.tracer import get_tracer
 
 _prompt_loader = PromptLoader()
 _registry = SubAgentRegistry()
@@ -74,6 +75,8 @@ def _parse_json_response(text: str) -> dict:
 
 def _generate_plan(state: OrchestrationState) -> dict:
     """方案制定阶段：将用户意图分解为 TaskPlan。"""
+    get_tracer().trace_phase("方案制定", "PlanAgent", "将用户意图分解为可执行的子任务计划")
+
     system_prompt = _prompt_loader.load_with_context(
         "plan", "plan_generation",
         intent=state.get("intent", ""),
@@ -122,6 +125,8 @@ def _generate_plan(state: OrchestrationState) -> dict:
 
 def _dispatch_tasks(state: OrchestrationState) -> dict:
     """任务派发阶段：将就绪的子任务派发给匹配的 SubAgent。"""
+    get_tracer().trace_phase("任务派发", "PlanAgent", "将就绪子任务派发给匹配的 SubAgent")
+
     task_plan = state.get("task_plan")
     if not task_plan:
         return {"phase": OrchestrationPhase.COMPLETED}
@@ -172,6 +177,8 @@ def _dispatch_tasks(state: OrchestrationState) -> dict:
 
 def _synthesize_results(state: OrchestrationState) -> dict:
     """结果汇总阶段：整合所有 SubAgent 的执行结果。"""
+    get_tracer().trace_phase("结果汇总", "PlanAgent", "整合所有 SubAgent 的执行结果")
+
     task_plan = state.get("task_plan")
     sub_results = state.get("sub_results", {})
 
