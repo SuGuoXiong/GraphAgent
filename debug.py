@@ -1,8 +1,10 @@
 """调试脚本 - 直接运行Agent进行测试
 
 用法:
-    py debug.py                    # 默认：三层编排图，日志级别 llm_io
+    py debug.py                    # 默认：三层编排图（直接模式），日志级别 llm_io
     py debug.py --simple           # 简单图（快速模式）
+    py debug.py --acp              # 启动 ACP HTTP+SSE 服务（默认端口 8080）
+    py debug.py --acp --port 9090  # 启动 ACP 服务并指定端口
     py debug.py --log-level full   # 最详细日志，包含工具调用
     py debug.py --log-level phases # 仅显示阶段切换
     py debug.py --log-level off    # 关闭日志
@@ -174,11 +176,52 @@ async def run_orchestration():
             print()
 
 
+async def run_acp_server(port: int = 8080):
+    """启动 ACP HTTP+SSE 服务。"""
+    from graph_agent.acp import ACPServer, HTTPSSETransport, ACPConfig
+    from graph_agent.tracer import OrchestrationTracer
+
+    # 初始化 Tracer
+    tracer = OrchestrationTracer()
+    tracer.install()
+
+    config = ACPConfig.from_yaml()
+    config.port = port
+    config.host = "127.0.0.1"
+
+    server = ACPServer(config)
+
+    print(f"=== GraphAgent ACP Server ===")
+    print(f"监听地址: http://{config.host}:{config.port}")
+    print(f"POST /acp/message  — 发送请求")
+    print(f"GET  /acp/events   — SSE 事件流")
+    print(f"GET  /health       — 健康检查")
+    print(f"会话存储: {server.session_manager.storage_dir}")
+    print(f"最大并发会话: {config.max_sessions}")
+    print(f"按 Ctrl+C 停止服务\n")
+
+    transport = HTTPSSETransport(server, config)
+    try:
+        await transport.start()
+    except KeyboardInterrupt:
+        print("\n服务已停止")
+    finally:
+        await transport.stop()
+
+
 async def main():
     parser = argparse.ArgumentParser(description="GraphAgent 调试脚本")
     parser.add_argument(
         "--simple", action="store_true",
         help="使用简单图（agent ↔ tools），响应更快",
+    )
+    parser.add_argument(
+        "--acp", action="store_true",
+        help="启动 ACP HTTP+SSE 服务，供 Web UI 等客户端连接",
+    )
+    parser.add_argument(
+        "--port", type=int, default=8080,
+        help="ACP 服务端口 (默认: 8080，仅与 --acp 配合使用)",
     )
     parser.add_argument(
         "--log-level",
@@ -193,7 +236,9 @@ async def main():
         import os
         os.environ["GRAPHAGENT_LOG_LEVEL"] = args.log_level
 
-    if args.simple:
+    if args.acp:
+        await run_acp_server(args.port)
+    elif args.simple:
         await run_simple()
     else:
         await run_orchestration()
