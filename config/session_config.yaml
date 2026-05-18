@@ -1,0 +1,25 @@
+# 多轮对话与上下文窗口管理配置
+session:
+  # 模型上下文窗口（Token 数）
+  context_window: 65536
+
+  # 普通压缩触发阈值（占上下文窗口的比例，0.0 ~ 1.0）
+  normal_compression_threshold: 0.6
+
+  # 高度压缩触发阈值（占上下文窗口的比例，0.0 ~ 1.0）
+  aggressive_compression_threshold: 0.8
+
+  # 压缩保护窗口：最近 N 轮对话不受压缩影响
+  keep_recent_turns: 3
+
+  # 持久化配置
+  persistence:
+    # 对话历史存储目录（相对于项目根目录）
+    storage_dir: "data/conversations"
+    # 是否启用自动保存（每轮对话完成后自动保存）
+    auto_save: true
+
+  # Token 估算配置
+  token_estimation:
+    # 估算方法: "char_ratio"
+    method: "char_ratio"

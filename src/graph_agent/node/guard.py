@@ -25,14 +25,18 @@ def _call_llm(system_prompt: str, user_text: str,
               message_type: MessageType = MessageType.AGENT_RESPONSE) -> MessageBlock:
     """调用 LLM 并返回 MessageBlock 格式的响应。"""
     from graph_agent.llm import LLMFactory
+    from graph_agent.session.persistence import sanitize_text
 
     provider = LLMFactory.create_from_env()
     llm = provider.get_chat_model()
 
     from langchain_core.messages import SystemMessage, HumanMessage
-    messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_text)]
+    messages = [
+        SystemMessage(content=sanitize_text(system_prompt)),
+        HumanMessage(content=sanitize_text(user_text)),
+    ]
     response = llm.invoke(messages, config={"run_name": name})
-    text = response.content if hasattr(response, 'content') else str(response)
+    text = sanitize_text(response.content if hasattr(response, 'content') else str(response))
 
     return create_assistant_message(
         content=text,

@@ -29,14 +29,18 @@ def _call_llm(system_prompt: str, user_text: str,
               name: str = "PlanAgent") -> str:
     """调用 LLM 并返回文本内容。"""
     from graph_agent.llm import LLMFactory
+    from graph_agent.session.persistence import sanitize_text
 
     provider = LLMFactory.create_from_env()
     llm = provider.get_chat_model()
 
     from langchain_core.messages import SystemMessage, HumanMessage
-    messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_text)]
+    messages = [
+        SystemMessage(content=sanitize_text(system_prompt)),
+        HumanMessage(content=sanitize_text(user_text)),
+    ]
     response = llm.invoke(messages, config={"run_name": name})
-    return response.content if hasattr(response, 'content') else str(response)
+    return sanitize_text(response.content if hasattr(response, 'content') else str(response))
 
 
 def _format_context(messages: list) -> str:
@@ -168,6 +172,7 @@ def _generate_plan(state: OrchestrationState) -> dict:
 
 def _resolve_placeholders(text: str, sub_results: dict[str, str]) -> str:
     """将文本中的 {{task_id}} 和 {{task_id.result}} 占位符替换为实际执行结果。"""
+    text = str(text)
     if not text or not sub_results:
         return text
 
@@ -214,10 +219,11 @@ def _dispatch_tasks(state: OrchestrationState) -> dict:
                 if resolved_input_data:
                     param_lines = []
                     for k, v in resolved_input_data.items():
-                        if "\n" in v:
-                            param_lines.append(f"- {k}:\n  \"\"\"\n  {v}\n  \"\"\"")
+                        v_str = str(v)
+                        if "\n" in v_str:
+                            param_lines.append(f"- {k}:\n  \"\"\"\n  {v_str}\n  \"\"\"")
                         else:
-                            param_lines.append(f"- {k}: {v}")
+                            param_lines.append(f"- {k}: {v_str}")
                     params_block = "\n".join(param_lines)
                     task.description = f"{task.description}\n\n【执行参数】\n{params_block}"
 

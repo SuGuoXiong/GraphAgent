@@ -23,6 +23,7 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
     每个 SubAgent 只能看见和使用其系统提示词中声明的工具。
     """
     from graph_agent.llm import LLMFactory
+    from graph_agent.session.persistence import sanitize_text
     from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 
     get_tracer().trace_phase(
@@ -38,14 +39,14 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
     subagent_tools = [all_tools[name] for name in tool_names if name in all_tools]
     langchain_tools = [t.to_langchain_tool() for t in subagent_tools]
 
-    system_prompt = config.load_system_prompt(
+    system_prompt = sanitize_text(config.load_system_prompt(
         loader,
         task_description=task_description,
-    )
+    ))
     llm_with_tools = llm.bind_tools(langchain_tools) if langchain_tools else llm
 
     messages = [SystemMessage(content=system_prompt),
-                HumanMessage(content=f"请完成以下任务:\n{task_description}")]
+                HumanMessage(content=sanitize_text(f"请完成以下任务:\n{task_description}"))]
 
     for _ in range(config.max_iterations):
         response = llm_with_tools.invoke(messages, config={"run_name": config.name})

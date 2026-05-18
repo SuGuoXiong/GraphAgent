@@ -1,5 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
+from datetime import datetime, timezone
 
 
 @dataclass
@@ -46,3 +47,6 @@ class MessageBlock:
 
     # 扩展字段
     metadata: dict[str, Any] = None
+
+    # 新增：自动生成 UTC 时间戳
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

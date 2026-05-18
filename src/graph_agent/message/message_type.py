@@ -26,6 +26,7 @@ class MessageType(Enum):
     GUARD_INTENT_ANALYSIS = "guard_intent_analysis"  # 意图分析结果
     GUARD_PLAN_REVIEW = "guard_plan_review"           # 方案审核（approved / rejected）
     GUARD_RESULT_REVIEW = "guard_result_review"       # 结果验收（approved / rejected）
+    FINAL_ANSWER = "final_answer"                     # Agent 呈现给用户的最终回复
 
     # === P2: PlanAgent 层 —— 任务规划，结构性消息 ===
     PLAN_PROPOSAL = "plan_proposal"                   # 方案制定（TaskPlan JSON）
@@ -53,6 +54,7 @@ _COMPRESSION_PRIORITY: dict[MessageType, int] = {
     MessageType.GUARD_INTENT_ANALYSIS: 1,
     MessageType.GUARD_PLAN_REVIEW: 1,
     MessageType.GUARD_RESULT_REVIEW: 1,
+    MessageType.FINAL_ANSWER: 1,
     MessageType.PLAN_PROPOSAL: 2,
     MessageType.PLAN_TASK_DISPATCH: 2,
     MessageType.PLAN_RESULT_SYNTHESIS: 2,
