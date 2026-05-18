@@ -116,9 +116,8 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
         msg = create_assistant_message(
             content=result,
             name=config.name,
-            message_type=MessageType.AGENT_RESPONSE,
+            message_type=MessageType.SUBAGENT_TASK_RESULT,
             metadata={
-                "message_type_override": "task_result",
                 "task_id": task.task_id,
                 "agent_name": config.name,
             },

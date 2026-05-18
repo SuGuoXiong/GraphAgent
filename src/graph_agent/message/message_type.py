@@ -1,25 +1,68 @@
+"""按三层编排架构分层的消息类型定义。
+
+类型前缀指示消息所属层级和压缩优先级：
+
+    P0 (绝不压缩):  USER_*
+    P1 (不可丢弃):  SYSTEM_*, GUARD_*
+    P2 (可摘要):    PLAN_*
+    P3 (可压缩):    SUBAGENT_*
+    P4 (高度可压):  TOOL_*
+"""
+
 from enum import Enum
 
 
 class MessageType(Enum):
-    # === 用户侧 ===
-    USER_INPUT = "user_input"           # 用户输入
-    USER_INTERRUPT = "user_interrupt"   # 用户中断当前执行
-    USER_FEEDBACK = "user_feedback"     # 用户对 Agent 输出的反馈
+    # === P0: 用户侧 ===
+    USER_INPUT = "user_input"
+    USER_INTERRUPT = "user_interrupt"
+    USER_FEEDBACK = "user_feedback"
 
-    # === Agent 侧 ===
-    AGENT_RESPONSE = "agent_response"       # Agent 最终文本回复
-    AGENT_THINK = "agent_think"             # Agent 内部推理 / 思维链
-    AGENT_ACTION = "agent_action"           # Agent 决定调用工具
-    AGENT_PLAN = "agent_plan"               # Agent 生成的执行计划
-    AGENT_SUMMARY = "agent_summary"         # Agent 对上下文的摘要压缩
-    AGENT_REFLECTION = "agent_reflection"   # Agent 自反思 / 自评估
-    AGENT_ERROR = "agent_error"             # Agent 自身错误
+    # === P1: 系统侧 ===
+    SYSTEM_PROMPT = "system_prompt"
+    SYSTEM_NOTIFICATION = "system_notification"
 
-    # === 系统侧 ===
-    SYSTEM_PROMPT = "system_prompt"             # 系统提示词
-    SYSTEM_NOTIFICATION = "system_notification"  # 系统通知（超时、限额等）
-    SYSTEM_STATE = "system_state"               # 状态变更通知
+    # === P1: GuardAgent 层 —— 质量把关，决策性消息 ===
+    GUARD_INTENT_ANALYSIS = "guard_intent_analysis"  # 意图分析结果
+    GUARD_PLAN_REVIEW = "guard_plan_review"           # 方案审核（approved / rejected）
+    GUARD_RESULT_REVIEW = "guard_result_review"       # 结果验收（approved / rejected）
 
-    # === 工具侧 ===
-    TOOL_RESULT = "tool_result"  # 工具执行结果
+    # === P2: PlanAgent 层 —— 任务规划，结构性消息 ===
+    PLAN_PROPOSAL = "plan_proposal"                   # 方案制定（TaskPlan JSON）
+    PLAN_TASK_DISPATCH = "plan_task_dispatch"         # 任务派发指令
+    PLAN_RESULT_SYNTHESIS = "plan_result_synthesis"   # 结果汇总（含 final_answer）
+
+    # === P3: SubAgent 层 —— 子任务执行 ===
+    SUBAGENT_TASK_RESULT = "subagent_task_result"     # 任务执行结果
+
+    # === P4: 工具侧 —— 原子操作 ===
+    TOOL_CALL = "tool_call"                           # Agent 调用工具请求
+    TOOL_RESULT = "tool_result"                       # 工具执行结果
+
+    # === 通用回退（仅用于 LangChain 反向转换等无上下文场景）===
+    AGENT_RESPONSE = "agent_response"
+
+
+# 压缩优先级 P0-P4，数值越小越重要，越不应被压缩
+_COMPRESSION_PRIORITY: dict[MessageType, int] = {
+    MessageType.USER_INPUT: 0,
+    MessageType.USER_INTERRUPT: 0,
+    MessageType.USER_FEEDBACK: 0,
+    MessageType.SYSTEM_PROMPT: 1,
+    MessageType.SYSTEM_NOTIFICATION: 1,
+    MessageType.GUARD_INTENT_ANALYSIS: 1,
+    MessageType.GUARD_PLAN_REVIEW: 1,
+    MessageType.GUARD_RESULT_REVIEW: 1,
+    MessageType.PLAN_PROPOSAL: 2,
+    MessageType.PLAN_TASK_DISPATCH: 2,
+    MessageType.PLAN_RESULT_SYNTHESIS: 2,
+    MessageType.SUBAGENT_TASK_RESULT: 3,
+    MessageType.TOOL_CALL: 4,
+    MessageType.TOOL_RESULT: 4,
+    MessageType.AGENT_RESPONSE: 2,
+}
+
+
+def get_compression_priority(message_type: MessageType) -> int:
+    """返回消息类型的压缩优先级（0-4，值越小越重要，越不应被压缩）。"""
+    return _COMPRESSION_PRIORITY.get(message_type, 2)

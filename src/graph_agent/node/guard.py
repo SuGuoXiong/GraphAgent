@@ -22,7 +22,7 @@ _prompt_loader = PromptLoader()
 def _call_llm(system_prompt: str, user_text: str,
               state: OrchestrationState,
               name: str = "GuardAgent",
-              message_type: str = "agent_response") -> MessageBlock:
+              message_type: MessageType = MessageType.AGENT_RESPONSE) -> MessageBlock:
     """调用 LLM 并返回 MessageBlock 格式的响应。"""
     from graph_agent.llm import LLMFactory
 
@@ -36,9 +36,8 @@ def _call_llm(system_prompt: str, user_text: str,
 
     return create_assistant_message(
         content=text,
-        message_type=MessageType.AGENT_RESPONSE,
+        message_type=message_type,
         name=name,
-        metadata={"message_type_override": message_type},
     )
 
 
@@ -123,7 +122,7 @@ def _analyze_intent(state: OrchestrationState) -> dict:
     )
     user_text = state.get("messages", [])[-1].content if state.get("messages") else ""
     msg = _call_llm(system_prompt, user_text, state,
-                    name="GuardAgent", message_type="guard_intent")
+                    name="GuardAgent", message_type=MessageType.GUARD_INTENT_ANALYSIS)
     result = _parse_json_response(msg.content if isinstance(msg.content, str) else "")
 
     return {
@@ -147,7 +146,7 @@ def _review_plan(state: OrchestrationState) -> dict:
     )
     user_text = f"请审核以下任务计划:\n{task_plan}"
     msg = _call_llm(system_prompt, user_text, state,
-                    name="GuardAgent", message_type="plan_review")
+                    name="GuardAgent", message_type=MessageType.GUARD_PLAN_REVIEW)
     result = _parse_json_response(msg.content if isinstance(msg.content, str) else "")
 
     approved = result.get("approved", True)
@@ -181,7 +180,7 @@ def _review_result(state: OrchestrationState) -> dict:
     )
     user_text = f"请验收以下最终结果:\n{final_result}"
     msg = _call_llm(system_prompt, user_text, state,
-                    name="GuardAgent", message_type="result_review")
+                    name="GuardAgent", message_type=MessageType.GUARD_RESULT_REVIEW)
     result = _parse_json_response(msg.content if isinstance(msg.content, str) else "")
 
     approved = result.get("approved", True)

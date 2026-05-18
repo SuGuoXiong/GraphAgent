@@ -26,8 +26,7 @@ _registry = SubAgentRegistry()
 
 def _call_llm(system_prompt: str, user_text: str,
               state: OrchestrationState,
-              name: str = "PlanAgent",
-              message_type: str = "agent_response") -> str:
+              name: str = "PlanAgent") -> str:
     """调用 LLM 并返回文本内容。"""
     from graph_agent.llm import LLMFactory
 
@@ -131,8 +130,7 @@ def _generate_plan(state: OrchestrationState) -> dict:
         conversation_context=_format_context(state.get("messages", [])),
     )
     user_text = f"请为以下意图制定任务计划:\n{state.get('intent', '')}"
-    text = _call_llm(system_prompt, user_text, state,
-                     name="PlanAgent", message_type="plan_proposal")
+    text = _call_llm(system_prompt, user_text, state, name="PlanAgent")
     result = _parse_json_response(text)
 
     sub_tasks_raw = result.get("sub_tasks", [])
@@ -157,8 +155,7 @@ def _generate_plan(state: OrchestrationState) -> dict:
     msg = create_assistant_message(
         content=text,
         name="PlanAgent",
-        message_type=MessageType.AGENT_RESPONSE,
-        metadata={"message_type_override": "plan_proposal"},
+        message_type=MessageType.PLAN_PROPOSAL,
     )
 
     return {
@@ -215,8 +212,14 @@ def _dispatch_tasks(state: OrchestrationState) -> dict:
 
                 # 将解析后的 input_data 追加到任务描述中，确保 SubAgent 获得完整上下文
                 if resolved_input_data:
-                    params = ", ".join(f"{k}={v}" for k, v in resolved_input_data.items())
-                    task.description = f"{task.description}\n\n[参数: {params}]"
+                    param_lines = []
+                    for k, v in resolved_input_data.items():
+                        if "\n" in v:
+                            param_lines.append(f"- {k}:\n  \"\"\"\n  {v}\n  \"\"\"")
+                        else:
+                            param_lines.append(f"- {k}: {v}")
+                    params_block = "\n".join(param_lines)
+                    task.description = f"{task.description}\n\n【执行参数】\n{params_block}"
 
                 candidates = _registry.find_by_skill(task.required_skill)
                 # 精确匹配失败时回退到 general_agent
@@ -238,9 +241,8 @@ def _dispatch_tasks(state: OrchestrationState) -> dict:
                     msg = create_assistant_message(
                         content=task.description,
                         name="PlanAgent",
-                        message_type=MessageType.AGENT_RESPONSE,
+                        message_type=MessageType.PLAN_TASK_DISPATCH,
                         metadata={
-                            "message_type_override": "task_assignment",
                             "task_id": task.task_id,
                             "required_skill": task.required_skill,
                             "assigned_agent": task.assigned_agent,
@@ -281,8 +283,7 @@ def _synthesize_results(state: OrchestrationState) -> dict:
         conversation_context=_format_context(state.get("messages", [])),
     )
     user_text = f"请汇总以下子任务结果:\n{_format_sub_results(sub_results)}"
-    text = _call_llm(system_prompt, user_text, state,
-                     name="PlanAgent", message_type="final_result")
+    text = _call_llm(system_prompt, user_text, state, name="PlanAgent")
 
     # 从 LLM 返回的 JSON 中提取最终的文本摘要
     result_json = _parse_json_response(text)
@@ -291,8 +292,7 @@ def _synthesize_results(state: OrchestrationState) -> dict:
     msg = create_assistant_message(
         content=text,
         name="PlanAgent",
-        message_type=MessageType.AGENT_RESPONSE,
-        metadata={"message_type_override": "final_result"},
+        message_type=MessageType.PLAN_RESULT_SYNTHESIS,
     )
 
     return {

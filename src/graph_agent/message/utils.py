@@ -107,7 +107,7 @@ def validate_message(msg: MessageBlock) -> bool:
 
 def is_tool_call(msg: MessageBlock) -> bool:
     """判断消息是否包含工具调用请求。"""
-    if msg.message_type != MessageType.AGENT_ACTION.value:
+    if msg.message_type != MessageType.TOOL_CALL.value:
         return False
     if isinstance(msg.content, list):
         return any(

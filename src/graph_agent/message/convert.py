@@ -146,7 +146,7 @@ def langchain_to_agent_message(msg: BaseMessage) -> MessageBlock:
                 role="assistant",
                 content=blocks,
                 name=msg.name or "",
-                message_type=MessageType.AGENT_ACTION.value,
+                message_type=MessageType.TOOL_CALL.value,
                 message_id=msg_id,
                 metadata=metadata,
             )
