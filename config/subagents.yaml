@@ -65,7 +65,7 @@ subagents:
     max_iterations: 3
 
   - name: general_agent
-    description: "通用任务执行者，能处理各类常规任务"
+    description: "通用任务执行者，能处理各类常规任务，包括文本生成、对话、问答等"
     skills:
       - file_management
       - calculation
@@ -73,6 +73,7 @@ subagents:
       - command_execution
       - web_fetch
       - json_processing
+      - text_generation
     tools:
       - read_file
       - write_file

@@ -31,7 +31,7 @@ def _call_llm(system_prompt: str, user_text: str,
 
     from langchain_core.messages import SystemMessage, HumanMessage
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_text)]
-    response = llm.invoke(messages)
+    response = llm.invoke(messages, config={"run_name": name})
     text = response.content if hasattr(response, 'content') else str(response)
 
     return create_assistant_message(
@@ -55,16 +55,61 @@ def _format_context(messages: list) -> str:
 
 def _parse_json_response(text: str) -> dict:
     """从 LLM 响应中提取 JSON。"""
+    import re
+
+    cleaned = text.strip()
+
+    # 1) 先尝试直接解析
     try:
-        return json.loads(text)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
-        import re
-        match = re.search(r'\{[^{}]*\{[^{}]*\}[^{}]*\}|\{[^{}]*\}', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
+        pass
+
+    # 2) 从 markdown 代码块中提取 ```json ... ```
+    m = re.search(r'```(?:json)?\s*([\s\S]*?)```', cleaned)
+    if m:
+        try:
+            return json.loads(m.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # 3) 按大括号深度提取最外层 JSON 对象
+    start = cleaned.find('{')
+    if start >= 0:
+        depth = 0
+        in_string = False
+        escaped = False
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == '\\':
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        json_str = cleaned[start:i + 1]
+                        try:
+                            return json.loads(json_str)
+                        except json.JSONDecodeError:
+                            break
+
+    # 4) 回退：尝试简单正则
+    match = re.search(r'\{[^{}]*\{[^{}]*\}[^{}]*\}|\{[^{}]*\}', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
     return {}
 
 
@@ -145,11 +190,20 @@ def _review_result(state: OrchestrationState) -> dict:
         "GuardAgent", f"结果验收{decision}", result.get("feedback", ""),
     )
 
+    new_retries = state.get("review_retries", 0) + (0 if approved else 1)
+    max_retries = state.get("max_review_retries", 3)
+    exceeded = new_retries >= max_retries
+
+    if exceeded and not approved:
+        get_tracer().trace_decision(
+            "GuardAgent", f"重试次数已达上限({max_retries})，强制结束",
+        )
+
     return {
-        "phase": OrchestrationPhase.COMPLETED if approved else OrchestrationPhase.RESULT_SYNTHESIS,
+        "phase": OrchestrationPhase.COMPLETED if (approved or exceeded) else OrchestrationPhase.RESULT_SYNTHESIS,
         "result_approved": approved,
         "guard_feedback": result.get("feedback", ""),
-        "review_retries": state.get("review_retries", 0) + (0 if approved else 1),
+        "review_retries": new_retries,
         "ga_messages": [msg],
         "messages": [agent_message_to_langchain(msg)],
     }
@@ -177,7 +231,10 @@ def guard_router(state: OrchestrationState) -> str:
     phase = state.get("phase", OrchestrationPhase.INTENT_ANALYSIS)
 
     if phase == OrchestrationPhase.PLAN_GENERATION:
-        # guard 刚完成意图分析 → PlanAgent 制定方案
+        # guard 刚驳回方案，检查重试次数避免死循环
+        max_retries = state.get("max_review_retries", 3)
+        if state.get("review_retries", 0) >= max_retries:
+            return "__end__"
         return "plan"
 
     if phase == OrchestrationPhase.PLAN_REVIEW:

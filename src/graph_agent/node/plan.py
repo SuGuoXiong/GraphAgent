@@ -35,7 +35,7 @@ def _call_llm(system_prompt: str, user_text: str,
 
     from langchain_core.messages import SystemMessage, HumanMessage
     messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_text)]
-    response = llm.invoke(messages)
+    response = llm.invoke(messages, config={"run_name": name})
     return response.content if hasattr(response, 'content') else str(response)
 
 
@@ -60,16 +60,61 @@ def _format_sub_results(sub_results: dict) -> str:
 
 def _parse_json_response(text: str) -> dict:
     """从 LLM 响应中提取 JSON。"""
+    import re
+
+    cleaned = text.strip()
+
+    # 1) 先尝试直接解析
     try:
-        return json.loads(text)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
-        import re
-        match = re.search(r'\{[^{}]*\{[^{}]*\}[^{}]*\}|\{[^{}]*\}', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
+        pass
+
+    # 2) 从 markdown 代码块中提取 ```json ... ```
+    m = re.search(r'```(?:json)?\s*([\s\S]*?)```', cleaned)
+    if m:
+        try:
+            return json.loads(m.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # 3) 按大括号深度提取最外层 JSON 对象
+    start = cleaned.find('{')
+    if start >= 0:
+        depth = 0
+        in_string = False
+        escaped = False
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == '\\':
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        json_str = cleaned[start:i + 1]
+                        try:
+                            return json.loads(json_str)
+                        except json.JSONDecodeError:
+                            break
+
+    # 4) 回退：尝试简单正则
+    match = re.search(r'\{[^{}]*\{[^{}]*\}[^{}]*\}|\{[^{}]*\}', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
     return {}
 
 
@@ -142,6 +187,19 @@ def _dispatch_tasks(state: OrchestrationState) -> dict:
             )
             if deps_met:
                 candidates = _registry.find_by_skill(task.required_skill)
+                # 精确匹配失败时回退到 general_agent
+                if not candidates and task.required_skill:
+                    candidates = _registry.find_by_skill("text_generation")
+                    if not candidates:
+                        try:
+                            candidates = [_registry.get("general_agent")]
+                        except KeyError:
+                            pass
+                    if candidates:
+                        get_tracer().trace_decision(
+                            "PlanAgent",
+                            f"技能 '{task.required_skill}' 无精确匹配，回退到 {candidates[0].name}",
+                        )
                 if candidates:
                     task.status = "running"
                     task.assigned_agent = candidates[0].name

@@ -7,7 +7,8 @@
 4. 制定执行策略（串行/并行）
 
 ## 可用的 SubAgent
-以下是你可调度的 SubAgent 及其能力描述：
+以下是你可调度的 SubAgent 及其能力描述。**你必须严格从下方列出的技能标签中选择 required_skill，不得编造新的技能名称。** 对于常规文本生成、对话、问答类任务，请使用 general_agent 的 text_generation 技能。
+
 {available_subagents}
 
 ## 输出格式
@@ -21,7 +22,7 @@
     {{
       "task_id": "task_1",
       "description": "子任务描述",
-      "required_skill": "所需技能标签（必须从上方的可用SubAgent技能中选择）",
+      "required_skill": "必须从上方的可用SubAgent技能列表中选择，禁止编造",
       "dependencies": [],
       "input_data": {{}}
     }}

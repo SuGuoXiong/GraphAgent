@@ -48,7 +48,7 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
                 HumanMessage(content=f"请完成以下任务:\n{task_description}")]
 
     for _ in range(config.max_iterations):
-        response = llm_with_tools.invoke(messages)
+        response = llm_with_tools.invoke(messages, config={"run_name": config.name})
         messages.append(response)
 
         has_tool_calls = (hasattr(response, "tool_calls") and response.tool_calls)

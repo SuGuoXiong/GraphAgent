@@ -48,6 +48,7 @@ def build_orchestration_graph() -> StateGraph:
     builder.add_conditional_edges("plan", plan_router, {
         "guard": "guard",
         "sub_exec": "sub_exec",
+        "plan": "plan",
         "__end__": END,
     })
 
