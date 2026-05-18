@@ -125,8 +125,11 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
         )
         result_messages.append(msg)
 
+    # 检查是否还有待调度的子任务（依赖刚完成的任务已满足）
+    has_pending = any(t.status == "pending" for t in task_plan.sub_tasks)
+
     return {
-        "phase": OrchestrationPhase.RESULT_SYNTHESIS,
+        "phase": OrchestrationPhase.TASK_EXECUTION if has_pending else OrchestrationPhase.RESULT_SYNTHESIS,
         "sub_results": sub_results,
         "task_plan": task_plan,
         "ga_messages": result_messages,

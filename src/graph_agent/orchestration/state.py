@@ -55,3 +55,4 @@ class OrchestrationState(AgentState):
     result_approved: bool
     review_retries: int
     max_review_retries: int
+    final_answer: str

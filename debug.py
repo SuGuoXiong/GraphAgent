@@ -91,9 +91,13 @@ async def run_orchestration():
             result = await graph.ainvoke({
                 "messages": [HumanMessage(content=user_input)],
             })
-            last_message = result["messages"][-1]
+            # 优先使用 PlanAgent 汇总时提取的最终答案，
+            # 如果没有（比如流程异常中断），回退到最后一条消息
+            final_answer = result.get("final_answer", "")
+            if not final_answer:
+                final_answer = result["messages"][-1].content
             print(f"\n{'─' * 60}")
-            print(f"Agent: {last_message.content}")
+            print(f"Agent: {final_answer}")
             print(f"{'─' * 60}\n")
         except Exception as e:
             print(f"[错误] {type(e).__name__}: {e}\n")
