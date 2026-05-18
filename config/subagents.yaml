@@ -1,0 +1,89 @@
+# SubAgent 注册配置文件
+# 新增 SubAgent 只需在此添加一条记录，并在 prompts/subagent/ 下创建提示词文件即可。
+
+subagents:
+  - name: file_agent
+    description: "文件系统读写专家，能读取、写入、追加文件内容，列出目录，检查文件存在性"
+    skills:
+      - file_management
+    tools:
+      - read_file
+      - write_file
+      - append_file
+      - list_directory
+      - delete_file
+      - delete_directory
+      - file_exists
+    prompt_file: file_agent
+    max_iterations: 3
+
+  - name: calc_agent
+    description: "数学计算与数据分析专家，能安全地对数值进行计算和统计"
+    skills:
+      - calculation
+    tools:
+      - safe_calculator
+    prompt_file: calc_agent
+    max_iterations: 3
+
+  - name: time_agent
+    description: "时间信息查询专家，能获取当前 UTC 时间并进行时间格式转换"
+    skills:
+      - time_query
+    tools:
+      - get_utc_time
+    prompt_file: time_agent
+    max_iterations: 2
+
+  - name: cmd_agent
+    description: "命令执行专家，能在安全白名单范围内执行只读 shell 命令"
+    skills:
+      - command_execution
+    tools:
+      - run_command
+    prompt_file: cmd_agent
+    max_iterations: 3
+
+  - name: web_agent
+    description: "网页内容抓取与搜索专家，能获取 URL 内容并进行网页搜索"
+    skills:
+      - web_fetch
+    tools:
+      - fetch_web
+      - search_web
+    prompt_file: web_agent
+    max_iterations: 5
+
+  - name: json_agent
+    description: "JSON 数据处理专家，能将对象序列化为 JSON 文本或将 JSON 文本解析为对象"
+    skills:
+      - json_processing
+    tools:
+      - json_dump
+      - json_load
+    prompt_file: json_agent
+    max_iterations: 3
+
+  - name: general_agent
+    description: "通用任务执行者，能处理各类常规任务，包括文本生成、对话、问答等"
+    skills:
+      - file_management
+      - calculation
+      - time_query
+      - command_execution
+      - web_fetch
+      - json_processing
+      - text_generation
+    tools:
+      - read_file
+      - write_file
+      - list_directory
+      - file_exists
+      - safe_calculator
+      - get_utc_time
+      - run_command
+      - fetch_web
+      - json_dump
+      - json_load
+    prompt_file: general_agent
+    max_iterations: 5
