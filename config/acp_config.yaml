@@ -1,0 +1,26 @@
+# ACP（Agent Client Protocol）服务端配置
+# 可通过 ACPConfig.from_yaml() 加载
+
+acp:
+  server:
+    host: "127.0.0.1"
+    port: 8080
+    transports:
+      - http_sse
+    cors:
+      allowed_origins:
+        - "http://localhost:3000"
+      allowed_methods:
+        - GET
+        - POST
+
+  session:
+    max_concurrent_sessions: 50
+    session_timeout_minutes: 30
+    cleanup_interval_minutes: 5
+    persistence:
+      storage_dir: "data/conversations"
+
+  streaming:
+    max_event_buffer: 1000
+    heartbeat_interval_seconds: 15

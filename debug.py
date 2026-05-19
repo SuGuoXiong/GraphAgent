@@ -11,18 +11,16 @@
 """
 import asyncio
 import sys
-import io
 import argparse
 
 sys.path.insert(0, 'src')
 
-# 修复 Windows 控制台编码问题：强制 stdout 使用 UTF-8
-sys.stdout = io.TextIOWrapper(
-    sys.stdout.buffer,
-    encoding='utf-8',
-    errors='replace',
-    line_buffering=True,
-)
+# 修复 Windows 控制台编码问题
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 
 async def run_simple():
@@ -178,8 +176,21 @@ async def run_orchestration():
 
 async def run_acp_server(port: int = 8080):
     """启动 ACP HTTP+SSE 服务。"""
-    from graph_agent.acp import ACPServer, HTTPSSETransport, ACPConfig
-    from graph_agent.tracer import OrchestrationTracer
+    print("正在初始化 GraphAgent ACP 服务...", flush=True)
+    print("正在初始化 GraphAgent ACP 服务...", file=sys.stderr)
+
+    try:
+        from graph_agent.acp import ACPServer, HTTPSSETransport, ACPConfig
+        from graph_agent.tracer import OrchestrationTracer
+    except Exception as e:
+        print(f"[错误] 模块导入失败: {e}", flush=True)
+        print(f"[错误] 模块导入失败: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return
+
+    print("  - 模块导入完成", flush=True)
+    print("  - 模块导入完成", file=sys.stderr)
 
     # 初始化 Tracer
     tracer = OrchestrationTracer()
@@ -189,13 +200,21 @@ async def run_acp_server(port: int = 8080):
     config.port = port
     config.host = "127.0.0.1"
 
-    server = ACPServer(config)
+    print("  - 正在构建编排图...", flush=True)
+    try:
+        server = ACPServer(config)
+    except Exception as e:
+        print(f"[错误] 服务初始化失败: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        return
 
-    print(f"=== GraphAgent ACP Server ===")
+    print(f"\n=== GraphAgent ACP Server ===")
     print(f"监听地址: http://{config.host}:{config.port}")
     print(f"POST /acp/message  — 发送请求")
     print(f"GET  /acp/events   — SSE 事件流")
     print(f"GET  /health       — 健康检查")
+    print(f"GET  /             — Web UI")
     print(f"会话存储: {server.session_manager.storage_dir}")
     print(f"最大并发会话: {config.max_sessions}")
     print(f"按 Ctrl+C 停止服务\n")

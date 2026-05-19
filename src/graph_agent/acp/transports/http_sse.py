@@ -55,11 +55,12 @@ class HTTPSSETransport(ACPTransport):
             log_level="warning",
         )
         uv_server = uvicorn.Server(uv_config)
-        self._server_task = asyncio.create_task(uv_server.serve())
+        self._server_task = uv_server
+        await uv_server.serve()
 
     async def stop(self) -> None:
         if self._server_task:
-            self._server_task.cancel()
+            self._server_task.should_exit = True
             self._server_task = None
         for q in self._event_queues.values():
             await q.put(ACPMessage.event("heartbeat", {"reason": "shutdown"}))
@@ -70,8 +71,9 @@ class HTTPSSETransport(ACPTransport):
     # ── FastAPI 应用构建 ──────────────────────────────────
 
     def _build_app(self) -> None:
-        from fastapi import FastAPI, Request, Query
-        from fastapi.responses import JSONResponse, StreamingResponse
+        from pathlib import Path
+        from fastapi import FastAPI, Body, Query, Request
+        from fastapi.responses import JSONResponse, HTMLResponse
         from fastapi.middleware.cors import CORSMiddleware
         from sse_starlette.sse import EventSourceResponse
 
@@ -88,19 +90,12 @@ class HTTPSSETransport(ACPTransport):
         server = self._server
 
         @app.post("/acp/message")
-        async def acp_message(req: Request):
+        async def acp_message(body: dict = Body(...)):
             """接收客户端请求并返回同步回复。
 
             对于 send_message 请求，先返回 ack，
             事件通过 SSE 通道异步推送。
             """
-            try:
-                body = await req.json()
-            except Exception:
-                return JSONResponse(
-                    _error_body(ErrorCode.INVALID_REQUEST, "无法解析 JSON 请求体"),
-                    status_code=400,
-                )
 
             acp_msg = ACPMessage.from_dict(body)
 
@@ -171,6 +166,14 @@ class HTTPSSETransport(ACPTransport):
         @app.get("/health")
         async def health():
             return {"status": "ok", "active_sessions": server.session_manager.active_count}
+
+        @app.get("/", response_class=HTMLResponse)
+        async def web_ui():
+            """Serve the GraphAgent web UI."""
+            ui_path = Path(__file__).parent.parent.parent / "web_ui" / "index.html"
+            if ui_path.exists():
+                return HTMLResponse(ui_path.read_text(encoding="utf-8"))
+            return HTMLResponse("<h1>GraphAgent Web UI not found</h1>", status_code=404)
 
         self._app = app
 
