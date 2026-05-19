@@ -214,15 +214,21 @@ def _review_result(state: OrchestrationState) -> dict:
 
 def guard_node(state: OrchestrationState) -> dict:
     """GuardAgent 节点：根据当前 phase 执行对应职责。"""
+    from graph_agent.acp.checkpoint import _check_interrupt
+
     phase = state.get("phase", OrchestrationPhase.INTENT_ANALYSIS)
 
     if phase == OrchestrationPhase.INTENT_ANALYSIS:
-        return _analyze_intent(state)
+        result = _analyze_intent(state)
     elif phase == OrchestrationPhase.PLAN_REVIEW:
-        return _review_plan(state)
+        result = _review_plan(state)
     elif phase == OrchestrationPhase.RESULT_REVIEW:
-        return _review_result(state)
-    return {}
+        result = _review_result(state)
+    else:
+        result = {}
+
+    _check_interrupt(state)
+    return result
 
 
 def guard_router(state: OrchestrationState) -> str:

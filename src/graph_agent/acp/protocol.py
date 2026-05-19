@@ -34,6 +34,16 @@ def _new_id() -> str:
 # ── 事件类型枚举 ──────────────────────────────────────────────
 
 
+class SessionStatus(str, Enum):
+    """会话生命周期状态。"""
+    IDLE = "idle"
+    RUNNING = "running"
+    PAUSED = "paused"
+    RESUMING = "resuming"
+    COMPLETED = "completed"
+    EXPIRED = "expired"
+
+
 class RequestEvent(str, Enum):
     """客户端 → 服务端的请求事件类型。"""
     SEND_MESSAGE = "send_message"
@@ -43,6 +53,8 @@ class RequestEvent(str, Enum):
     CONFIGURE = "configure"
     LIST_SESSIONS = "list_sessions"
     DELETE_SESSION = "delete_session"
+    RESUME_SESSION = "resume_session"
+    GET_SESSION_STATUS = "get_session_status"
 
 
 class ResponseEvent(str, Enum):
@@ -66,6 +78,9 @@ class PushEvent(str, Enum):
     TOOL_RESULT = "tool_result"
     FINAL_ANSWER = "final_answer"
     EXECUTION_COMPLETE = "execution_complete"
+    EXECUTION_PAUSED = "execution_paused"
+    EXECUTION_RESUMED = "execution_resumed"
+    SESSION_STATUS = "session_status"
     HEARTBEAT = "heartbeat"
 
 
@@ -77,6 +92,10 @@ class ErrorCode(str, Enum):
     SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
     SESSION_EXPIRED = "SESSION_EXPIRED"
     SESSION_LIMIT = "SESSION_LIMIT"
+    SESSION_BUSY = "SESSION_BUSY"
+    SESSION_NOT_PAUSED = "SESSION_NOT_PAUSED"
+    CHECKPOINT_INVALID = "CHECKPOINT_INVALID"
+    RESUME_FAILED = "RESUME_FAILED"
     EXECUTION_ERROR = "EXECUTION_ERROR"
     COMPRESSION_ERROR = "COMPRESSION_ERROR"
     LLM_ERROR = "LLM_ERROR"
@@ -90,6 +109,10 @@ _ERROR_HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.SESSION_NOT_FOUND: 404,
     ErrorCode.SESSION_EXPIRED: 410,
     ErrorCode.SESSION_LIMIT: 429,
+    ErrorCode.SESSION_BUSY: 409,
+    ErrorCode.SESSION_NOT_PAUSED: 409,
+    ErrorCode.CHECKPOINT_INVALID: 422,
+    ErrorCode.RESUME_FAILED: 500,
     ErrorCode.EXECUTION_ERROR: 500,
     ErrorCode.COMPRESSION_ERROR: 500,
     ErrorCode.LLM_ERROR: 502,
@@ -247,6 +270,9 @@ class ACPConfig:
     transports: list[str] = field(default_factory=lambda: ["http_sse"])
     max_event_buffer: int = 1000
     storage_dir: str = "data/conversations"
+    execution_timeout: int = 300  # 秒
+    max_pause_duration: int = 3600  # 秒
+    checkpoint_ttl: int = 86400  # 秒
 
     @property
     def session_timeout_minutes(self) -> int:
@@ -263,6 +289,7 @@ class ACPConfig:
         server = acp.get("server", {})
         session = acp.get("session", {})
         streaming = acp.get("streaming", {})
+        execution = acp.get("execution", {})
         cors = server.get("cors", {})
         return cls(
             host=server.get("host", "127.0.0.1"),
@@ -276,6 +303,9 @@ class ACPConfig:
             transports=server.get("transports", ["http_sse"]),
             max_event_buffer=streaming.get("max_event_buffer", 1000),
             storage_dir=session.get("persistence", {}).get("storage_dir", "data/conversations"),
+            execution_timeout=execution.get("timeout_seconds", 300),
+            max_pause_duration=session.get("max_pause_duration_minutes", 60) * 60,
+            checkpoint_ttl=session.get("checkpoint_ttl_minutes", 1440) * 60,
         )
 
 

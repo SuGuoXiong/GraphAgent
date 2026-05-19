@@ -1,6 +1,6 @@
 """编排流程专用状态定义，在 AgentState 基础上扩展。"""
 
-from typing import Annotated
+from typing import Annotated, Any
 from dataclasses import dataclass, field
 from enum import Enum
 import operator
@@ -56,3 +56,4 @@ class OrchestrationState(AgentState):
     review_retries: int
     max_review_retries: int
     final_answer: str
+    _interrupt_event: Any = None

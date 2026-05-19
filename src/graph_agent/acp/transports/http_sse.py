@@ -120,6 +120,26 @@ class HTTPSSETransport(ACPTransport):
                     status_code=202,
                 )
 
+            # resume_session: 异步恢复执行
+            if acp_msg.event == RequestEvent.RESUME_SESSION.value:
+                session_id = acp_msg.payload.get("session_id", "")
+
+                if not session_id:
+                    return JSONResponse(
+                        _error_body(ErrorCode.INVALID_REQUEST, "缺少 session_id"),
+                        status_code=400,
+                    )
+
+                if session_id not in self._executing:
+                    self._executing.add(session_id)
+                    asyncio.create_task(
+                        self._resume_and_push(session_id, acp_msg.id)
+                    )
+                return JSONResponse(
+                    ACPMessage.ack(acp_msg.id, "resume_accepted").to_dict(),
+                    status_code=202,
+                )
+
             # 其他请求: 同步处理
             reply = server.handle_request(acp_msg)
             status = 200
@@ -150,10 +170,17 @@ class HTTPSSETransport(ACPTransport):
                         if msg.event == "heartbeat" and msg.payload.get("reason") == "shutdown":
                             break
                         event_name = msg.event
-                        if msg.event in ("final_answer", "execution_complete", "error"):
+                        # 执行完成或错误时发送事件后断连
+                        if msg.event in ("execution_complete", "error"):
                             yield {"event": event_name, "data": msg.to_json()}
-                            if msg.event in ("execution_complete", "error"):
-                                break
+                            break
+                        # execution_paused: 发送事件但不断连（客户端可等待恢复）
+                        elif msg.event == "execution_paused":
+                            yield {"event": event_name, "data": msg.to_json()}
+                        elif msg.event == "execution_resumed":
+                            yield {"event": event_name, "data": msg.to_json()}
+                        elif msg.event == "final_answer":
+                            yield {"event": event_name, "data": msg.to_json()}
                         else:
                             yield {"event": event_name, "data": msg.to_json()}
                 except asyncio.CancelledError:
@@ -166,6 +193,30 @@ class HTTPSSETransport(ACPTransport):
         @app.get("/health")
         async def health():
             return {"status": "ok", "active_sessions": server.session_manager.active_count}
+
+        @app.get("/acp/sessions/{session_id}/messages")
+        async def get_session_messages(session_id: str):
+            """返回指定会话的所有消息（供 Web UI 加载历史对话）。"""
+            ctx = server.session_manager.get_context(session_id)
+            if ctx is None:
+                ctx = server.session_manager.load_session(session_id)
+            if ctx is None:
+                return JSONResponse({"error": "会话不存在"}, status_code=404)
+
+            from graph_agent.session.persistence import _serialize_message
+            messages = [_serialize_message(m) for m in ctx.history.messages]
+            result = {
+                "session_id": session_id,
+                "turn_count": ctx.history.turn_count,
+                "messages": messages,
+                "status": ctx.status,
+            }
+            if ctx.checkpoint:
+                result["checkpoint"] = {
+                    "phase": ctx.checkpoint.get("phase", ""),
+                    "recovery_hint": ctx.checkpoint.get("recovery_hint", ""),
+                }
+            return JSONResponse(result)
 
         @app.get("/", response_class=HTMLResponse)
         async def web_ui():
@@ -180,6 +231,17 @@ class HTTPSSETransport(ACPTransport):
     async def _execute_and_push(self, session_id: str, content: str, request_id: str) -> None:
         """执行编排并推送事件到所有关联的 SSE 队列。"""
         events = await self._server.execute_turn(session_id, content)
+        for q in self._event_queues.values():
+            for event in events:
+                try:
+                    q.put_nowait(event)
+                except asyncio.QueueFull:
+                    pass
+        self._executing.discard(session_id)
+
+    async def _resume_and_push(self, session_id: str, request_id: str) -> None:
+        """恢复暂停的会话并推送事件到所有关联的 SSE 队列。"""
+        events = await self._server.resume_session(session_id)
         for q in self._event_queues.values():
             for event in events:
                 try:

@@ -82,6 +82,8 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
     每个 SubAgent 在独立的 ReAct 循环中运行，
     只能看见和使用其配置文件中声明的工具。
     """
+    from graph_agent.acp.checkpoint import _check_interrupt
+
     task_plan = state.get("task_plan")
     if not task_plan:
         return {}
@@ -125,8 +127,13 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
         )
         result_messages.append(msg)
 
+        # 每完成一个子任务后检查中断信号
+        _check_interrupt(state)
+
     # 检查是否还有待调度的子任务（依赖刚完成的任务已满足）
     has_pending = any(t.status == "pending" for t in task_plan.sub_tasks)
+
+    _check_interrupt(state)
 
     return {
         "phase": OrchestrationPhase.TASK_EXECUTION if has_pending else OrchestrationPhase.RESULT_SYNTHESIS,

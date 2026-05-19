@@ -18,8 +18,13 @@ acp:
     max_concurrent_sessions: 50
     session_timeout_minutes: 30
     cleanup_interval_minutes: 5
+    max_pause_duration_minutes: 60
+    checkpoint_ttl_minutes: 1440
     persistence:
       storage_dir: "data/conversations"
+
+  execution:
+    timeout_seconds: 300
 
   streaming:
     max_event_buffer: 1000

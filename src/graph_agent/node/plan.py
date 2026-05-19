@@ -311,15 +311,21 @@ def _synthesize_results(state: OrchestrationState) -> dict:
 
 def plan_node(state: OrchestrationState) -> dict:
     """PlanAgent 节点：根据当前 phase 执行对应职责。"""
+    from graph_agent.acp.checkpoint import _check_interrupt
+
     phase = state.get("phase", OrchestrationPhase.PLAN_GENERATION)
 
     if phase == OrchestrationPhase.PLAN_GENERATION:
-        return _generate_plan(state)
+        result = _generate_plan(state)
     elif phase == OrchestrationPhase.TASK_EXECUTION:
-        return _dispatch_tasks(state)
+        result = _dispatch_tasks(state)
     elif phase == OrchestrationPhase.RESULT_SYNTHESIS:
-        return _synthesize_results(state)
-    return {}
+        result = _synthesize_results(state)
+    else:
+        result = {}
+
+    _check_interrupt(state)
+    return result
 
 
 def plan_router(state: OrchestrationState) -> str:

@@ -5,10 +5,12 @@
 2. 接收来自传输层的请求并分派到编排引擎
 3. 将编排引擎内部事件转换为 ACP 事件推送给客户端
 4. 会话生命周期管理（创建、加载、压缩、持久化）
+5. 会话中断与恢复（检查点机制）
 """
 
 from __future__ import annotations
 
+import asyncio
 import queue
 from typing import Any
 
@@ -22,8 +24,15 @@ from graph_agent.acp.protocol import (
     ResponseEvent,
     RequestEvent,
     ErrorCode,
+    SessionStatus,
 )
 from graph_agent.acp.session_manager import SessionManager
+from graph_agent.acp.checkpoint import (
+    InterruptException,
+    serialize_checkpoint,
+    deserialize_checkpoint,
+    generate_recovery_hint,
+)
 from graph_agent.message.convert import agent_messages_to_langchain
 from graph_agent.orchestration.graph import build_orchestration_graph
 from graph_agent.tracer.tracer import get_tracer, OrchestrationTracer
@@ -227,6 +236,8 @@ class ACPServer:
             RequestEvent.DELETE_SESSION: self._handle_delete_session,
             RequestEvent.CONFIGURE: self._handle_configure,
             RequestEvent.INTERRUPT: self._handle_interrupt,
+            RequestEvent.RESUME_SESSION: self._handle_resume_session,
+            RequestEvent.GET_SESSION_STATUS: self._handle_get_session_status,
         }
 
         handler = handler_map.get(req_event)
@@ -242,10 +253,13 @@ class ACPServer:
                 request_id=request.id,
             )
 
-    async def execute_turn(self, session_id: str, user_input: str) -> list[ACPMessage]:
+    async def execute_turn(self, session_id: str, user_input: str = "") -> list[ACPMessage]:
         """执行一轮对话，返回 ACP 事件列表。
 
-        这是 send_message 请求的核心实现。
+        支持三种模式：
+        - 正常执行：user_input 非空，无 checkpoint
+        - 恢复执行：user_input 为空，存在 checkpoint
+        - 重新开始：user_input 非空，存在旧 checkpoint（放弃后重新开始）
         """
         events: list[ACPMessage] = []
 
@@ -257,10 +271,18 @@ class ACPServer:
             ))
             return events
 
-        if len(user_input) > 10000:
+        if user_input and len(user_input) > 10000:
             events.append(ACPMessage.error(
                 ErrorCode.INVALID_REQUEST,
                 "消息内容超过 10000 字符限制",
+            ))
+            return events
+
+        # 状态检查
+        if ctx.status == SessionStatus.RUNNING.value:
+            events.append(ACPMessage.error(
+                ErrorCode.SESSION_BUSY,
+                "会话正在执行中，无法重复操作",
             ))
             return events
 
@@ -277,42 +299,108 @@ class ACPServer:
             }))
 
         # 2. 准备上下文
-        ctx.history.add_user_message(user_input)
-        context_msgs = ctx.history.get_context_messages()
-        context_lc = agent_messages_to_langchain(context_msgs)
-        context_lc.append(HumanMessage(content=user_input))
+        is_resume = False
+        if ctx.checkpoint and not user_input:
+            # 恢复模式：从检查点恢复
+            is_resume = True
+            ctx.status = SessionStatus.RESUMING.value
+            initial_state = deserialize_checkpoint(ctx.checkpoint)
+            events.append(ACPMessage.event(PushEvent.PHASE_CHANGED, {
+                "phase": "resume",
+                "detail": f"从检查点恢复，阶段: {initial_state.get('phase', '')}",
+            }))
+            events.append(ACPMessage.event(PushEvent.EXECUTION_RESUMED, {
+                "session_id": session_id,
+                "phase": str(initial_state.get("phase", "")),
+                "recovery_hint": ctx.checkpoint.get("recovery_hint", ""),
+            }))
+        else:
+            # 正常模式（或放弃旧 checkpoint 重新开始）
+            if ctx.checkpoint:
+                ctx.checkpoint = None  # 放弃旧检查点
+            ctx.status = SessionStatus.RUNNING.value
+            ctx.history.add_user_message(user_input)
+            context_msgs = ctx.history.get_context_messages()
+            context_lc = agent_messages_to_langchain(context_msgs)
+            context_lc.append(HumanMessage(content=user_input))
+            initial_state = {"messages": context_lc}
 
-        # 3. 安装事件收集 hook
+        # 3. 注入中断控制
+        ctx.interrupt_event.clear()
+        initial_state["_interrupt_event"] = ctx.interrupt_event
+
+        # 4. 安装事件收集 hook
         collector = ACPEventCollector(session_id)
         hook = _ACPTracerHook(collector, self._tracer)
         hook.install()
 
-        # 4. 执行编排图
         try:
-            result = await self._graph.ainvoke({"messages": context_lc})
+            # 5. 执行编排图（带超时和中断捕获）
+            try:
+                timeout = self._config.execution_timeout
+                result = await asyncio.wait_for(
+                    self._graph.ainvoke(initial_state),
+                    timeout=timeout,
+                )
+            except InterruptException as e:
+                # 用户主动中断：保存检查点
+                checkpoint = serialize_checkpoint(e.state, session_id, "interrupt")
+                ctx.checkpoint = checkpoint
+                ctx.status = SessionStatus.PAUSED.value
+                self._session_manager.save_session(session_id)
 
-            # 5. 收集阶段 + LLM + 工具事件
+                events.extend(collector.drain())
+                plan = checkpoint.get("task_plan")
+                sub_results = checkpoint.get("sub_results", {})
+                events.append(ACPMessage.event(PushEvent.EXECUTION_PAUSED, {
+                    "session_id": session_id,
+                    "phase": checkpoint["phase"],
+                    "recovery_hint": checkpoint.get("recovery_hint", ""),
+                    "checkpoint_summary": {
+                        "total_tasks": len(plan.get("sub_tasks", [])) if plan else 0,
+                        "completed_tasks": len(sub_results),
+                        "created_at": checkpoint.get("created_at", ""),
+                    },
+                }))
+                return events
+
+            except asyncio.TimeoutError:
+                # 超时：尝试保存检查点后暂停
+                events.extend(collector.drain())
+                if ctx.status == SessionStatus.RUNNING.value or ctx.status == SessionStatus.RESUMING.value:
+                    ctx.status = SessionStatus.PAUSED.value
+                events.append(ACPMessage.event(PushEvent.EXECUTION_PAUSED, {
+                    "session_id": session_id,
+                    "reason": "timeout",
+                    "recovery_hint": "执行超时，已自动保存检查点",
+                }))
+                return events
+
+            # 6. 正常完成 — 收集阶段 + LLM + 工具事件
             events.extend(collector.drain())
 
-            # 6. 追加 agent 消息到历史
+            # 7. 追加 agent 消息到历史
             ga_msgs = result.get("ga_messages", [])
             if ga_msgs:
                 ctx.history.add_agent_messages(list(ga_msgs))
 
-            # 7. 提取最终回复
+            # 8. 提取最终回复
             final_answer = result.get("final_answer", "")
             if not final_answer:
                 all_messages = result.get("messages", [])
                 if all_messages:
                     final_msg = all_messages[-1]
                     final_answer = final_msg.content if hasattr(final_msg, 'content') else str(final_msg)
-            ctx.history.add_final_answer(final_answer)
+            if final_answer:
+                ctx.history.add_final_answer(final_answer)
 
             events.append(ACPMessage.event(PushEvent.FINAL_ANSWER, {
                 "content": final_answer,
             }))
 
-            # 8. 持久化
+            # 9. 清理检查点，标记完成
+            ctx.checkpoint = None
+            ctx.status = SessionStatus.COMPLETED.value
             self._session_manager.save_session(session_id)
 
             events.append(ACPMessage.event(PushEvent.EXECUTION_COMPLETE, {
@@ -320,8 +408,25 @@ class ACPServer:
                 "turn_count": ctx.history.turn_count,
             }))
 
+        except InterruptException as e:
+            # 在 hook 安装/卸载期间也可能捕获到延迟的中断
+            checkpoint = serialize_checkpoint(e.state, session_id, "interrupt")
+            ctx.checkpoint = checkpoint
+            ctx.status = SessionStatus.PAUSED.value
+            self._session_manager.save_session(session_id)
+
+            events.extend(collector.drain())
+            events.append(ACPMessage.event(PushEvent.EXECUTION_PAUSED, {
+                "session_id": session_id,
+                "phase": checkpoint["phase"],
+                "recovery_hint": checkpoint.get("recovery_hint", ""),
+            }))
+            return events
+
         except Exception as e:
             import traceback
+            ctx.status = SessionStatus.IDLE.value
+            ctx.checkpoint = None
             events.append(ACPMessage.error(
                 ErrorCode.EXECUTION_ERROR,
                 str(e),
@@ -329,7 +434,6 @@ class ACPServer:
             ))
         finally:
             hook.uninstall()
-            # 确保 hook 期间未取完的事件也被收集
             events.extend(collector.drain())
 
         ctx.touch()
@@ -394,4 +498,82 @@ class ACPServer:
         return ACPMessage.ack(request.id, status="configured")
 
     def _handle_interrupt(self, request: ACPMessage) -> ACPMessage:
-        return ACPMessage.ack(request.id, status="interrupted")
+        """设置中断信号，编排图将在下一个安全边界暂停。"""
+        session_id = request.payload.get("session_id", "")
+        if not session_id:
+            return ACPMessage.error(ErrorCode.INVALID_REQUEST, "缺少 session_id", request_id=request.id)
+
+        ctx = self._session_manager.get_context(session_id)
+        if ctx is None:
+            return ACPMessage.error(ErrorCode.SESSION_NOT_FOUND, f"会话不存在: {session_id}", request_id=request.id)
+
+        if ctx.status != SessionStatus.RUNNING.value and ctx.status != SessionStatus.RESUMING.value:
+            return ACPMessage.error(
+                ErrorCode.INVALID_REQUEST,
+                f"会话状态为 {ctx.status}，无法中断",
+                request_id=request.id,
+            )
+
+        ctx.interrupt_event.set()
+        return ACPMessage.response(ResponseEvent.ACK, {
+            "request_id": request.id,
+            "session_id": session_id,
+            "status": "interrupt_requested",
+            "message": "中断信号已发送，等待编排图到达安全边界",
+        }, request_id=request.id)
+
+    async def resume_session(self, session_id: str) -> list[ACPMessage]:
+        """从检查点恢复会话执行。"""
+        ctx = self._session_manager.get_context(session_id)
+        if ctx is None:
+            return [ACPMessage.error(ErrorCode.SESSION_NOT_FOUND, f"会话 '{session_id}' 不存在")]
+
+        if ctx.status != SessionStatus.PAUSED.value:
+            return [ACPMessage.error(ErrorCode.SESSION_NOT_PAUSED, f"会话状态为 {ctx.status}，无法恢复")]
+
+        if not ctx.checkpoint:
+            return [ACPMessage.error(ErrorCode.CHECKPOINT_INVALID, "检查点数据不存在")]
+
+        return await self.execute_turn(session_id, user_input="")
+
+    def _handle_resume_session(self, request: ACPMessage) -> ACPMessage:
+        """处理恢复请求（同步 ack，实际恢复由传输层异步执行）。"""
+        session_id = request.payload.get("session_id", "")
+        if not session_id:
+            return ACPMessage.error(ErrorCode.INVALID_REQUEST, "缺少 session_id", request_id=request.id)
+
+        ctx = self._session_manager.get_context(session_id)
+        if ctx is None:
+            return ACPMessage.error(ErrorCode.SESSION_NOT_FOUND, f"会话不存在: {session_id}", request_id=request.id)
+
+        if ctx.status != SessionStatus.PAUSED.value:
+            return ACPMessage.error(
+                ErrorCode.SESSION_NOT_PAUSED,
+                f"会话状态为 {ctx.status}，无法恢复",
+                request_id=request.id,
+            )
+
+        if not ctx.checkpoint:
+            return ACPMessage.error(ErrorCode.CHECKPOINT_INVALID, "检查点数据不存在", request_id=request.id)
+
+        return ACPMessage.response(ResponseEvent.ACK, {
+            "request_id": request.id,
+            "session_id": session_id,
+            "status": "resume_accepted",
+            "checkpoint_summary": {
+                "phase": ctx.checkpoint.get("phase", ""),
+                "recovery_hint": ctx.checkpoint.get("recovery_hint", ""),
+            },
+        }, request_id=request.id)
+
+    def _handle_get_session_status(self, request: ACPMessage) -> ACPMessage:
+        """返回会话的完整状态信息。"""
+        session_id = request.payload.get("session_id", "")
+        if not session_id:
+            return ACPMessage.error(ErrorCode.INVALID_REQUEST, "缺少 session_id", request_id=request.id)
+
+        status_info = self._session_manager.get_session_status(session_id)
+        if status_info is None:
+            return ACPMessage.error(ErrorCode.SESSION_NOT_FOUND, f"会话 '{session_id}' 不存在", request_id=request.id)
+
+        return ACPMessage.response(ResponseEvent.ACK, status_info, request_id=request.id)

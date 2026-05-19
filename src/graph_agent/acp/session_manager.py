@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import glob
 import os
 import time
@@ -24,6 +25,7 @@ from graph_agent.acp.protocol import (
     ACPConfig,
     CompressionResult,
     SessionInfo,
+    SessionStatus,
     ErrorCode,
 )
 
@@ -38,6 +40,9 @@ class ConversationContext:
     config: SessionConfig
     created_at: str = ""
     last_active_at: str = ""
+    interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
+    status: str = "idle"
+    checkpoint: dict | None = None
 
     def touch(self, timestamp: str = "") -> None:
         import datetime
@@ -89,15 +94,18 @@ class SessionManager:
             ctx.touch()
             return ctx
 
-        history = self._persistence.load(session_id)
-        if history is None:
+        result = self._persistence.load_with_metadata(session_id)
+        if result is None:
             return None
 
+        history, status, checkpoint = result
         ctx = ConversationContext(
             history=history,
             config=self._session_config,
             created_at=history.created_at,
             last_active_at=history.updated_at or history.created_at,
+            status=status or "idle",
+            checkpoint=checkpoint,
         )
         self._active[session_id] = ctx
         self._enforce_session_limit()
@@ -115,7 +123,7 @@ class SessionManager:
         ctx = self._active.get(session_id)
         if ctx is None:
             return None
-        return self._persistence.save(ctx.history)
+        return self._persistence.save(ctx.history, status=ctx.status, checkpoint=ctx.checkpoint)
 
     def delete_session(self, session_id: str) -> bool:
         """删除会话（内存 + 磁盘）。"""
@@ -212,6 +220,30 @@ class SessionManager:
             after_tokens=token_count,
         )
 
+    def get_session_status(self, session_id: str) -> dict | None:
+        """获取会话的完整状态信息。"""
+        ctx = self._active.get(session_id)
+        if ctx is None:
+            return None
+        checkpoint_summary = None
+        if ctx.checkpoint:
+            plan = ctx.checkpoint.get("task_plan")
+            sub_results = ctx.checkpoint.get("sub_results", {})
+            checkpoint_summary = {
+                "phase": ctx.checkpoint.get("phase", ""),
+                "recovery_hint": ctx.checkpoint.get("recovery_hint", ""),
+                "total_tasks": len(plan.get("sub_tasks", [])) if plan else 0,
+                "completed_tasks": len(sub_results),
+                "created_at": ctx.checkpoint.get("created_at", ""),
+                "reason": ctx.checkpoint.get("reason", ""),
+            }
+        return {
+            "session_id": session_id,
+            "status": ctx.status,
+            "turn_count": ctx.history.turn_count,
+            "checkpoint": checkpoint_summary,
+        }
+
     # ── 清理 ──────────────────────────────────────────────
 
     def cleanup_expired(self) -> int:
@@ -229,9 +261,29 @@ class SessionManager:
                     expired.append(sid)
             except (ValueError, TypeError):
                 expired.append(sid)
+
+            # 检查 PAUSED 状态超时
+            if ctx.status == SessionStatus.PAUSED.value and ctx.checkpoint:
+                max_pause = getattr(self._acp_config, 'max_pause_duration', 3600)
+                ckpt_time = ctx.checkpoint.get("created_at", "")
+                if ckpt_time:
+                    try:
+                        ckpt_dt = datetime.datetime.strptime(
+                            ckpt_time, "%Y-%m-%dT%H:%M:%SZ"
+                        ).replace(tzinfo=datetime.timezone.utc)
+                        if (now - ckpt_dt).total_seconds() > max_pause:
+                            ctx.status = SessionStatus.EXPIRED.value
+                            ctx.checkpoint = None
+                            self.save_session(sid)
+                            if sid not in expired:
+                                expired.append(sid)
+                    except (ValueError, TypeError):
+                        pass
+
         for sid in expired:
-            self.save_session(sid)
-            del self._active[sid]
+            if sid in self._active:
+                self.save_session(sid)
+                del self._active[sid]
         return len(expired)
 
     def _enforce_session_limit(self) -> None:

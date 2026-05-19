@@ -123,7 +123,7 @@ class ConversationPersistence:
     def __init__(self, storage_dir: str = "data/conversations"):
         self._storage_dir = Path(storage_dir)
 
-    def save(self, history: ConversationHistory) -> str:
+    def save(self, history: ConversationHistory, status: str = "", checkpoint: dict | None = None) -> str:
         """将对话历史保存为 JSON 文件，返回文件路径。"""
         self._storage_dir.mkdir(parents=True, exist_ok=True)
 
@@ -134,6 +134,10 @@ class ConversationPersistence:
             "turn_count": history.turn_count,
             "messages": [_serialize_message(m) for m in history.messages],
         }
+        if status:
+            payload["status"] = status
+        if checkpoint:
+            payload["checkpoint"] = checkpoint
 
         file_path = self._storage_dir / f"{history.session_id}.json"
         tmp_path = self._storage_dir / f"{history.session_id}.tmp"
@@ -146,6 +150,13 @@ class ConversationPersistence:
 
     def load(self, session_id: str) -> ConversationHistory | None:
         """从 JSON 文件加载指定会话的对话历史。"""
+        result = self.load_with_metadata(session_id)
+        if result is None:
+            return None
+        return result[0]
+
+    def load_with_metadata(self, session_id: str) -> tuple[ConversationHistory, str, dict | None] | None:
+        """从 JSON 文件加载会话，返回 (history, status, checkpoint) 三元组。"""
         file_path = self._storage_dir / f"{session_id}.json"
         if not file_path.exists():
             return None
@@ -161,7 +172,9 @@ class ConversationPersistence:
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
         )
-        return history
+        status = data.get("status", "")
+        checkpoint = data.get("checkpoint")
+        return history, status, checkpoint
 
     def storage_dir(self) -> str:
         return str(self._storage_dir.resolve())
