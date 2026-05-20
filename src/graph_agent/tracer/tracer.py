@@ -3,16 +3,19 @@
 通过环境变量 GRAPHAGENT_LOG_LEVEL 或构造函数参数控制日志级别：
   - off:      不输出任何信息
   - phases:   仅输出阶段切换信息
-  - llm_io:   输出阶段 + LLM 输入/输出（默认）
-  - full:     输出阶段 + LLM I/O + 工具调用详情
+  - llm_io:   输出阶段 + LLM 输入/输出（默认，LLM/工具终端输出由 Hook 处理）
+  - full:     输出阶段 + LLM I/O + 工具调用详情（LLM/工具终端输出由 Hook 处理）
+
+LLM 调用和工具调用的终端输出已迁移到 Hook 机制：
+  src/graph_agent/hook/builtin/tracer_hooks.py
+
+本模块仅保留阶段级别的埋点（trace_phase、trace_decision 等）。
 """
 
 import os
 import sys
 from typing import Optional
 
-from graph_agent.llm.base import LLMFactory
-from graph_agent.tracer.llm_callback import LLMCallbackHandler
 from graph_agent.tracer.format import (
     print_phase_header, print_phase_end,
     print_decision, print_error,
@@ -20,10 +23,12 @@ from graph_agent.tracer.format import (
 
 
 class OrchestrationTracer:
-    """全局可观测性管理器（单例）。"""
+    """全局可观测性管理器（单例）—— 仅保留阶段/决策级埋点。
+
+    LLM 调用和工具调用的终端输出已迁移到 hook/builtin/tracer_hooks.py。
+    """
 
     _instance: Optional["OrchestrationTracer"] = None
-    _installed: bool = False
 
     def __new__(cls, level: Optional[str] = None):
         if cls._instance is None:
@@ -35,7 +40,6 @@ class OrchestrationTracer:
         if self._initialized:
             if level is not None:
                 self.log_level = level
-                self._llm_callback.log_level = level
             return
 
         if level is None:
@@ -46,7 +50,6 @@ class OrchestrationTracer:
             level = "llm_io"
 
         self.log_level = level
-        self._llm_callback = LLMCallbackHandler(log_level=level)
         self._call_sequence = 0
         self._initialized = True
 
@@ -54,11 +57,11 @@ class OrchestrationTracer:
             print(f"[Tracer] 日志级别: {level}", file=sys.stderr)
 
     def install(self) -> None:
-        """将 LLM callback 注册到 LLMFactory，使所有 LLM 调用被自动拦截。"""
-        if OrchestrationTracer._installed:
-            return
-        LLMFactory.register_callback(self._llm_callback)
-        OrchestrationTracer._installed = True
+        """初始化追踪器（标记为已安装，不再注册 LLM callback）。
+
+        LLM/工具调用的终端输出已由 Hook 机制接管。
+        """
+        pass
 
     @property
     def show_phases(self) -> bool:
@@ -100,10 +103,6 @@ class OrchestrationTracer:
         if not self.show_phases:
             return
         print_phase_end(status)
-
-    def get_llm_callback(self) -> LLMCallbackHandler:
-        """获取 LLM callback handler（供高级用法）。"""
-        return self._llm_callback
 
 
 def get_tracer() -> OrchestrationTracer:

@@ -1,11 +1,11 @@
 """GraphAgent 可观测性模块。
 
-提供 OrchestrationTracer 和 LLMCallbackHandler，
-实现阶段追踪、LLM 输入/输出记录、工具调用记录。
+提供 OrchestrationTracer 进行阶段追踪和决策记录。
+LLM 调用和工具调用的终端输出已迁移到 Hook 机制：
+  src/graph_agent/hook/builtin/tracer_hooks.py
 """
 
 from graph_agent.tracer.tracer import OrchestrationTracer, get_tracer
-from graph_agent.tracer.llm_callback import LLMCallbackHandler
 from graph_agent.tracer.format import (
     print_phase_header, print_phase_end,
     print_llm_request, print_llm_response,
@@ -15,7 +15,6 @@ from graph_agent.tracer.format import (
 __all__ = [
     "OrchestrationTracer",
     "get_tracer",
-    "LLMCallbackHandler",
     "print_phase_header",
     "print_phase_end",
     "print_llm_request",

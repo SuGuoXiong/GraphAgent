@@ -32,8 +32,39 @@ class AgentTool:
         self.parameters = parameters
 
     def run(self, **kwargs: Any) -> str:
-        """执行工具逻辑。"""
-        return self.func(**kwargs)
+        """执行工具逻辑（含 before/after_tool_call Hook 检查点）。"""
+        from graph_agent.hook import get_hook_executor, HookContext, HookAction, HookAbortError
+
+        executor = get_hook_executor()
+        ctx = HookContext(
+            checkpoint="before_tool_call",
+            tool_name=self.name,
+            tool_args=kwargs,
+        )
+        ctx, decision = executor.execute("before_tool_call", ctx)
+
+        if decision and decision.action == HookAction.SKIP:
+            return decision.fallback_result or f"工具 '{self.name}' 被 Hook 跳过"
+        if decision and decision.action == HookAction.ABORT:
+            raise HookAbortError(decision.reason)
+
+        # 应用 Type 1 Hook 可能修改的参数
+        kwargs = ctx.tool_args or kwargs
+
+        try:
+            result = self.func(**kwargs)
+        except Exception as e:
+            ctx.tool_result = None
+            ctx.tool_error = str(e)
+            ctx.checkpoint = "after_tool_call"
+            executor.execute("after_tool_call", ctx)
+            raise
+
+        ctx.tool_result = result
+        ctx.checkpoint = "after_tool_call"
+        executor.execute("after_tool_call", ctx)
+
+        return result
 
     def to_langchain_tool(self) -> StructuredTool:
         """转换为 LangChain 兼容的工具。"""

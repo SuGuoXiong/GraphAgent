@@ -106,16 +106,15 @@ class ACPEventCollector:
 
 
 class _ACPTracerHook:
-    """将 OrchestrationTracer 的输出同时路由到原生终端的 collector。
+    """将 OrchestrationTracer 的输出同时路由到 ACP 事件收集器。
 
-    不替换 tracer 实例本身，而是替换其 _llm_callback 为
-    一个同时写入原始 handler 和 collector 的装饰器。
+    通过 monkey-patch trace_phase/trace_decision + 注册临时 Type 3 Hook，
+    实现编排/LLM/工具事件的 ACP 推送。
     """
 
     def __init__(self, collector: ACPEventCollector, tracer: OrchestrationTracer):
         self._collector = collector
         self._tracer = tracer
-        self._original_callback = tracer.get_llm_callback()
         self._original_trace_phase = tracer.trace_phase
         self._original_trace_decision = tracer.trace_decision
         self._installed = False
@@ -140,47 +139,46 @@ class _ACPTracerHook:
 
         tracer.trace_decision = _hooked_decision  # type: ignore[method-assign]
 
-        # 钩入 LLM callback
-        if self._original_callback:
-            original_on_tool_start = getattr(self._original_callback, 'on_tool_start', None)
-            original_on_tool_end = getattr(self._original_callback, 'on_tool_end', None)
-            original_on_llm_start = getattr(self._original_callback, 'on_llm_start', None)
-            original_on_llm_end = getattr(self._original_callback, 'on_llm_end', None)
+        # 通过 Hook 机制收集 LLM/工具事件（Type 3 会话级 Hook）
+        from graph_agent.hook import HookContext, HookType, get_hook_executor
 
-            class HookedCallback(type(self._original_callback)):
-                def on_tool_start(self, serialized, input_str, **kwargs):
-                    name = serialized.get("name", "") if isinstance(serialized, dict) else getattr(serialized, "name", "")
-                    collector.collect_tool_call(name, {"input": str(input_str)[:200]})
-                    if original_on_tool_start:
-                        original_on_tool_start(serialized, input_str, **kwargs)
+        executor = get_hook_executor()
 
-                def on_tool_end(self, output, **kwargs):
-                    out = str(output)[:500] if output else ""
-                    collector.collect_tool_result("", out)
-                    if original_on_tool_end:
-                        original_on_tool_end(output, **kwargs)
+        def _collect_tool_call(ctx: HookContext) -> None:
+            collector.collect_tool_call(
+                ctx.tool_name or "unknown",
+                ctx.tool_args or {},
+            )
 
-                def on_llm_start(self, serialized, prompts, **kwargs):
-                    preview = ""
-                    if prompts:
-                        first = prompts[0] if isinstance(prompts, list) else str(prompts)
-                        if hasattr(first, 'content'):
-                            preview = str(first.content)[:300]
-                        else:
-                            preview = str(first)[:300]
-                    collector.collect_llm_start("", preview)
-                    if original_on_llm_start:
-                        original_on_llm_start(serialized, prompts, **kwargs)
+        def _collect_tool_result(ctx: HookContext) -> None:
+            collector.collect_tool_result(
+                ctx.tool_name or "unknown",
+                str(ctx.tool_result or "")[:500],
+            )
 
-                def on_llm_end(self, response, **kwargs):
-                    token_usage = {}
-                    if hasattr(response, 'llm_output') and response.llm_output:
-                        token_usage = response.llm_output.get("token_usage", {})
-                    collector.collect_llm_end("", token_usage)
-                    if original_on_llm_end:
-                        original_on_llm_end(response, **kwargs)
+        def _collect_llm_start(ctx: HookContext) -> None:
+            preview = ""
+            msgs = ctx.llm_messages or []
+            if msgs:
+                first = msgs[0]
+                if hasattr(first, "content"):
+                    preview = str(first.content)[:300]
+                else:
+                    preview = str(first)[:300]
+            collector.collect_llm_start(ctx.llm_caller or "", preview)
 
-            tracer._llm_callback = HookedCallback(log_level=tracer.log_level)
+        def _collect_llm_end(ctx: HookContext) -> None:
+            collector.collect_llm_end(
+                ctx.llm_caller or "",
+                ctx.llm_token_usage,
+            )
+
+        # 注册为会话级 Hook（优先级 600，在 tracer 终端输出之后）
+        register = executor.register
+        register.add_session_hook(_collect_tool_call, "before_tool_call", 600, HookType.OBSERVE)
+        register.add_session_hook(_collect_tool_result, "after_tool_call", 600, HookType.OBSERVE)
+        register.add_session_hook(_collect_llm_start, "before_llm_call", 600, HookType.OBSERVE)
+        register.add_session_hook(_collect_llm_end, "after_llm_call", 600, HookType.OBSERVE)
 
         self._installed = True
 
@@ -189,7 +187,10 @@ class _ACPTracerHook:
             return
         self._tracer.trace_phase = self._original_trace_phase  # type: ignore[method-assign]
         self._tracer.trace_decision = self._original_trace_decision  # type: ignore[method-assign]
-        self._tracer._llm_callback = self._original_callback
+
+        from graph_agent.hook import get_hook_executor
+        get_hook_executor().register.clear_session_hooks()
+
         self._installed = False
 
 

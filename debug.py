@@ -27,6 +27,9 @@ async def run_simple():
     """简单图模式：agent ↔ tools，1-2 次 LLM 调用即可完成。"""
     from graph_agent.graph import graph
     from graph_agent.message import create_user_message
+    from graph_agent.hook import init_hooks
+
+    init_hooks()
 
     print("=== Graph Agent 简单模式 ===")
     print("输入 'quit' 或 'exit' 退出\n")
@@ -60,6 +63,7 @@ async def run_orchestration():
     """三层编排图模式：GuardAgent → PlanAgent → SubAgent 完整流程。"""
     from graph_agent.orchestration.graph import build_orchestration_graph
     from graph_agent.tracer import OrchestrationTracer
+    from graph_agent.hook import init_hooks
     from graph_agent.session.history import ConversationHistory
     from graph_agent.session.persistence import ConversationPersistence
     from graph_agent.session.compressor import (
@@ -68,6 +72,9 @@ async def run_orchestration():
     from graph_agent.llm import LLMFactory
     from graph_agent.message.convert import agent_messages_to_langchain
     from langchain_core.messages import HumanMessage
+
+    # 初始化 Hook 系统（自动发现并注册所有 @hook 方法）
+    init_hooks()
 
     # 初始化可观测性追踪器
     tracer = OrchestrationTracer()
@@ -182,6 +189,7 @@ async def run_acp_server(port: int = 8080):
     try:
         from graph_agent.acp import ACPServer, HTTPSSETransport, ACPConfig
         from graph_agent.tracer import OrchestrationTracer
+        from graph_agent.hook import init_hooks
     except Exception as e:
         print(f"[错误] 模块导入失败: {e}", flush=True)
         print(f"[错误] 模块导入失败: {e}", file=sys.stderr)
@@ -191,6 +199,9 @@ async def run_acp_server(port: int = 8080):
 
     print("  - 模块导入完成", flush=True)
     print("  - 模块导入完成", file=sys.stderr)
+
+    # 初始化 Hook 系统
+    init_hooks()
 
     # 初始化 Tracer
     tracer = OrchestrationTracer()
