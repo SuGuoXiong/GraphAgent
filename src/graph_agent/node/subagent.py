@@ -10,6 +10,7 @@ from graph_agent.message import (
 )
 from graph_agent.message.message_type import MessageType
 from graph_agent.tracer import get_tracer
+from graph_agent.acp.checkpoint import AskUserException
 
 _tool_center = ToolCenter()
 _tool_center.auto_discover()
@@ -48,6 +49,12 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
     messages = [SystemMessage(content=system_prompt),
                 HumanMessage(content=sanitize_text(f"请完成以下任务:\n{task_description}"))]
 
+    # 注入恢复消息（ask_user 中断恢复时，将 AIMessage + ToolMessage 注入到 ReAct 循环中）
+    injected = state.get("_injected_messages")
+    if injected:
+        messages.extend(injected)
+        state["_injected_messages"] = None
+
     for _ in range(config.max_iterations):
         response = llm_with_tools.invoke(messages, config={"run_name": config.name})
         messages.append(response)
@@ -66,6 +73,12 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
             if tool and tool_name in tool_names:
                 try:
                     result_text = tool.run(**tool_args)
+                except AskUserException as e:
+                    e.state = {
+                        "llm_response": messages[-1] if messages else None,
+                        "ask_user_tool_id": tool_id,
+                    }
+                    raise
                 except Exception as e:
                     result_text = f"工具执行错误: {e}"
             else:
@@ -111,7 +124,23 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
             task.error = f"未找到 SubAgent: {task.assigned_agent}"
             continue
 
-        result = _run_subagent(config, task.description, task.task_id, state, loader)
+        try:
+            result = _run_subagent(config, task.description, task.task_id, state, loader)
+        except AskUserException as e:
+            full_state = dict(state)
+            if e.state and e.state.get("llm_response"):
+                full_state["_ask_user_llm_response"] = e.state["llm_response"]
+            if e.state and e.state.get("ask_user_tool_id"):
+                full_state["_ask_user_tool_id"] = e.state["ask_user_tool_id"]
+            full_state["task_plan"] = task_plan
+            full_state["sub_results"] = sub_results
+            raise AskUserException(
+                question=e.question,
+                options=e.options,
+                require_approval=e.require_approval,
+                state=full_state,
+            ) from e
+
         sub_results[task.task_id] = result
         task.status = "completed"
         task.result = result

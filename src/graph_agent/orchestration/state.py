@@ -57,3 +57,5 @@ class OrchestrationState(AgentState):
     max_review_retries: int
     final_answer: str
     _interrupt_event: Any = None
+    _injected_messages: list | None = None
+    _ask_user_llm_response: Any = None

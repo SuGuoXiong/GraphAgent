@@ -42,6 +42,7 @@ class SessionStatus(str, Enum):
     RESUMING = "resuming"
     COMPLETED = "completed"
     EXPIRED = "expired"
+    AWAITING_USER = "awaiting_user"
 
 
 class RequestEvent(str, Enum):
@@ -54,6 +55,7 @@ class RequestEvent(str, Enum):
     LIST_SESSIONS = "list_sessions"
     DELETE_SESSION = "delete_session"
     RESUME_SESSION = "resume_session"
+    REPLY_USER = "reply_user"
     GET_SESSION_STATUS = "get_session_status"
 
 
@@ -80,6 +82,7 @@ class PushEvent(str, Enum):
     EXECUTION_COMPLETE = "execution_complete"
     EXECUTION_PAUSED = "execution_paused"
     EXECUTION_RESUMED = "execution_resumed"
+    ASK_USER = "ask_user"
     SESSION_STATUS = "session_status"
     HEARTBEAT = "heartbeat"
 

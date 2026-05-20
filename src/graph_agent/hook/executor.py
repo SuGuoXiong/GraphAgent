@@ -58,6 +58,10 @@ class HookExecutor:
                     entry.func(ctx)
             except Exception as e:
                 if entry.hook_type == HookType.CONTROL:
+                    # AskUserException 需要原样传播，供上层 catch 处理
+                    from graph_agent.acp.checkpoint import AskUserException
+                    if isinstance(e, AskUserException):
+                        raise
                     raise HookAbortError(
                         f"Control hook '{entry.func_name}' 异常: {e}"
                     ) from e

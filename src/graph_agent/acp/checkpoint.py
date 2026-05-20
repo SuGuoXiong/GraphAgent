@@ -30,6 +30,22 @@ class InterruptException(Exception):
         self.state = state
 
 
+class AskUserException(Exception):
+    """Agent 向用户提问时抛出的异常。
+
+    由 before_tool_call Hook 拦截 ask_user 工具调用时抛出，
+    被 ACPServer.execute_turn() 捕获并转换为 ASK_USER 事件。
+    """
+
+    def __init__(self, question: str, options: list[str] | None = None,
+                 require_approval: bool = False, state: dict | None = None):
+        self.question = question
+        self.options = options
+        self.require_approval = require_approval
+        self.state = state or {}
+        super().__init__(question)
+
+
 def _check_interrupt(state: dict) -> None:
     """编排图节点在完成核心逻辑后调用此函数检查中断信号。
 
@@ -102,6 +118,18 @@ def serialize_checkpoint(state: dict, session_id: str, reason: str) -> dict:
         except Exception:
             serialized_ga.append(str(m))
 
+    # ── _ask_user_llm_response 序列化 ─────────────────
+    ask_user_llm_resp = state.get("_ask_user_llm_response")
+    serialized_ask_user_llm = None
+    if ask_user_llm_resp is not None:
+        try:
+            serialized_ask_user_llm = message_to_dict(ask_user_llm_resp)
+        except Exception:
+            serialized_ask_user_llm = None
+
+    # ── _ask_user_tool_id 序列化 ──────────────────────
+    ask_user_tool_id = state.get("_ask_user_tool_id", "")
+
     # ── phase 序列化 ──────────────────────────────────
     phase_val = state.get("phase", "")
     if hasattr(phase_val, "value"):
@@ -120,6 +148,8 @@ def serialize_checkpoint(state: dict, session_id: str, reason: str) -> dict:
         "final_answer": state.get("final_answer", ""),
         "messages": serialized_messages,
         "ga_messages": serialized_ga,
+        "_ask_user_llm_response": serialized_ask_user_llm,
+        "_ask_user_tool_id": ask_user_tool_id,
         "session_id": session_id,
         "created_at": _iso_now(),
         "reason": reason,
@@ -190,6 +220,16 @@ def deserialize_checkpoint(checkpoint: dict) -> dict:
             except Exception:
                 pass
 
+    # ── _ask_user_llm_response 恢复 ───────────────────
+    ask_user_llm_raw = checkpoint.get("_ask_user_llm_response")
+    ask_user_llm_resp = None
+    if ask_user_llm_raw:
+        try:
+            msgs = messages_from_dict([ask_user_llm_raw])
+            ask_user_llm_resp = msgs[0] if msgs else None
+        except Exception:
+            ask_user_llm_resp = None
+
     return {
         "phase": phase,
         "intent": checkpoint.get("intent", ""),
@@ -201,6 +241,8 @@ def deserialize_checkpoint(checkpoint: dict) -> dict:
         "final_answer": checkpoint.get("final_answer", ""),
         "messages": messages,
         "ga_messages": ga_msgs,
+        "_ask_user_llm_response": ask_user_llm_resp,
+        "_ask_user_tool_id": checkpoint.get("_ask_user_tool_id", ""),
     }
 
 

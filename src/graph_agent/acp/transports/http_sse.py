@@ -139,6 +139,31 @@ class HTTPSSETransport(ACPTransport):
                     status_code=202,
                 )
 
+            # reply_user: 存储回答并异步恢复执行
+            if acp_msg.event == RequestEvent.REPLY_USER.value:
+                session_id = acp_msg.payload.get("session_id", "")
+
+                if not session_id:
+                    return JSONResponse(
+                        _error_body(ErrorCode.INVALID_REQUEST, "缺少 session_id"),
+                        status_code=400,
+                    )
+
+                # 先同步存储用户回答
+                reply = server.handle_request(acp_msg)
+                if reply.is_error():
+                    code = ErrorCode(reply.payload.get("code", "INTERNAL_ERROR"))
+                    status = _error_http_status(code)
+                    return JSONResponse(reply.to_dict(), status_code=status)
+
+                # 异步恢复执行
+                if session_id not in self._executing:
+                    self._executing.add(session_id)
+                    asyncio.create_task(
+                        self._resume_and_push(session_id, acp_msg.id)
+                    )
+                return JSONResponse(reply.to_dict(), status_code=202)
+
             # 其他请求: 同步处理
             reply = server.handle_request(acp_msg)
             status = 200
@@ -173,8 +198,8 @@ class HTTPSSETransport(ACPTransport):
                         if msg.event in ("execution_complete", "error"):
                             yield {"event": event_name, "data": msg.to_json()}
                             break
-                        # execution_paused: 发送事件但不断连（客户端可等待恢复）
-                        elif msg.event == "execution_paused":
+                        # execution_paused / ask_user: 发送事件但不断连
+                        elif msg.event in ("execution_paused", "ask_user"):
                             yield {"event": event_name, "data": msg.to_json()}
                         elif msg.event == "execution_resumed":
                             yield {"event": event_name, "data": msg.to_json()}

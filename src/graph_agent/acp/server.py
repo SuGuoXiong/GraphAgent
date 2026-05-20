@@ -29,6 +29,7 @@ from graph_agent.acp.protocol import (
 from graph_agent.acp.session_manager import SessionManager
 from graph_agent.acp.checkpoint import (
     InterruptException,
+    AskUserException,
     serialize_checkpoint,
     deserialize_checkpoint,
     generate_recovery_hint,
@@ -36,6 +37,78 @@ from graph_agent.acp.checkpoint import (
 from graph_agent.message.convert import agent_messages_to_langchain
 from graph_agent.orchestration.graph import build_orchestration_graph
 from graph_agent.tracer.tracer import get_tracer, OrchestrationTracer
+
+
+def _build_user_reply(ask_ctx: dict, reply: str, selected_option: int | None) -> str:
+    """根据问题上下文和用户回答构建回复文本。"""
+    if selected_option is not None and ask_ctx.get("options"):
+        options = ask_ctx["options"]
+        if 0 <= selected_option < len(options):
+            return f"用户选择了: {options[selected_option]}"
+    if ask_ctx.get("require_approval"):
+        reply_lower = reply.lower()
+        approved = reply_lower in ("yes", "是", "ok", "approve", "批准", "确认", "true", "1")
+        return f"用户{'批准' if approved else '拒绝'}了该操作"
+    return reply or "(用户未提供回答)"
+
+
+def _inject_user_reply(state: dict, user_reply: str, tool_call_id: str = "") -> dict:
+    """将用户回答作为 ask_user 的 ToolResult 注入到状态中。
+
+    优先使用显式传入的 tool_call_id；未传入时回退到搜索 messages 中
+    最后一个 ask_user 的 AIMessage。
+    """
+    from graph_agent.message import (
+        ContentBlock, ToolResultBlock, MessageBlock, generate_message_id,
+    )
+    from graph_agent.message.message_type import MessageType
+    from langchain_core.messages import ToolMessage, AIMessage
+
+    messages = state.get("messages", [])
+    ga_msgs = state.get("ga_messages", [])
+
+    # 优先使用显式传入的 tool_call_id，否则搜索 messages
+    ask_user_tool_id = tool_call_id
+    if not ask_user_tool_id:
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")
+                    if tc_name == "ask_user":
+                        ask_user_tool_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", "")
+                        break
+                if ask_user_tool_id:
+                    break
+
+    if ask_user_tool_id:
+        # 追加 ToolMessage 到 messages
+        messages.append(ToolMessage(
+            content=user_reply,
+            tool_call_id=ask_user_tool_id,
+            name="ask_user",
+        ))
+        state["messages"] = messages
+
+        # 追加 ToolResult 到 ga_messages
+        result_block = ContentBlock(
+            block_type="tool_result",
+            tool_result=ToolResultBlock(
+                tool_id=ask_user_tool_id,
+                tool_name="ask_user",
+                output=user_reply,
+                status="success",
+            ),
+        )
+        ga_msgs.append(MessageBlock(
+            role="tool",
+            content=[result_block],
+            name="ask_user",
+            message_type=MessageType.TOOL_RESULT.value,
+            message_id=generate_message_id(),
+        ))
+        state["ga_messages"] = ga_msgs
+
+    return state
 
 
 class ACPEventCollector:
@@ -238,6 +311,7 @@ class ACPServer:
             RequestEvent.CONFIGURE: self._handle_configure,
             RequestEvent.INTERRUPT: self._handle_interrupt,
             RequestEvent.RESUME_SESSION: self._handle_resume_session,
+            RequestEvent.REPLY_USER: self._handle_reply_user,
             RequestEvent.GET_SESSION_STATUS: self._handle_get_session_status,
         }
 
@@ -306,6 +380,23 @@ class ACPServer:
             is_resume = True
             ctx.status = SessionStatus.RESUMING.value
             initial_state = deserialize_checkpoint(ctx.checkpoint)
+
+            # 如果是从 ask_user 中断恢复，注入用户回答
+            if ctx.checkpoint.get("reason") == "ask_user" and "user_reply" in ctx.checkpoint:
+                user_reply = ctx.checkpoint.pop("user_reply")
+                ask_ctx = ctx.checkpoint.get("ask_user_context", {})
+                ask_llm = initial_state.pop("_ask_user_llm_response", None)
+                if ask_llm is not None:
+                    initial_state["messages"].append(ask_llm)
+                initial_state = _inject_user_reply(
+                    initial_state, user_reply,
+                    tool_call_id=ask_ctx.get("tool_call_id", ""),
+                )
+                # 将最后两条消息（AIMessage + ToolMessage）注入到 SubAgent 的 ReAct 循环中
+                initial_state["_injected_messages"] = list(
+                    initial_state.get("messages", [])[-2:]
+                )
+
             events.append(ACPMessage.event(PushEvent.PHASE_CHANGED, {
                 "phase": "resume",
                 "detail": f"从检查点恢复，阶段: {initial_state.get('phase', '')}",
@@ -362,6 +453,30 @@ class ACPServer:
                         "completed_tasks": len(sub_results),
                         "created_at": checkpoint.get("created_at", ""),
                     },
+                }))
+                return events
+
+            except AskUserException as e:
+                # Agent 向用户提问：保存检查点，推送 ASK_USER 事件
+                state = e.state or {}
+                checkpoint = serialize_checkpoint(state, session_id, "ask_user")
+                checkpoint["ask_user_context"] = {
+                    "question": e.question,
+                    "options": e.options,
+                    "require_approval": e.require_approval,
+                    "tool_call_id": state.get("_ask_user_tool_id", ""),
+                }
+                ctx.checkpoint = checkpoint
+                ctx.status = SessionStatus.AWAITING_USER.value
+                self._session_manager.save_session(session_id)
+
+                events.extend(collector.drain())
+                events.append(ACPMessage.event(PushEvent.ASK_USER, {
+                    "session_id": session_id,
+                    "question": e.question,
+                    "options": e.options,
+                    "require_approval": e.require_approval,
+                    "checkpoint_phase": checkpoint.get("phase", ""),
                 }))
                 return events
 
@@ -523,13 +638,49 @@ class ACPServer:
             "message": "中断信号已发送，等待编排图到达安全边界",
         }, request_id=request.id)
 
+    def _handle_reply_user(self, request: ACPMessage) -> ACPMessage:
+        """处理用户对 ask_user 的回答。"""
+        session_id = request.payload.get("session_id", "")
+        reply = request.payload.get("reply", "")
+        selected_option = request.payload.get("selected_option")
+
+        if not session_id:
+            return ACPMessage.error(ErrorCode.INVALID_REQUEST, "缺少 session_id",
+                                    request_id=request.id)
+
+        ctx = self._session_manager.get_context(session_id)
+        if ctx is None:
+            return ACPMessage.error(ErrorCode.SESSION_NOT_FOUND,
+                                    f"会话 '{session_id}' 不存在", request_id=request.id)
+
+        if ctx.status != SessionStatus.AWAITING_USER.value:
+            return ACPMessage.error(ErrorCode.SESSION_NOT_PAUSED,
+                                    f"会话状态为 {ctx.status}，未在等待用户回复",
+                                    request_id=request.id)
+
+        if not ctx.checkpoint or "ask_user_context" not in ctx.checkpoint:
+            return ACPMessage.error(ErrorCode.CHECKPOINT_INVALID,
+                                    "检查点中缺少 ask_user 上下文",
+                                    request_id=request.id)
+
+        ask_ctx = ctx.checkpoint["ask_user_context"]
+        response_text = _build_user_reply(ask_ctx, reply, selected_option)
+
+        ctx.checkpoint["user_reply"] = response_text
+        self._session_manager.save_session(session_id)
+
+        return ACPMessage.response(ResponseEvent.ACK, {
+            "reply_accepted": True,
+            "session_id": session_id,
+        }, request_id=request.id)
+
     async def resume_session(self, session_id: str) -> list[ACPMessage]:
-        """从检查点恢复会话执行。"""
+        """从检查点恢复会话执行（支持 PAUSED 和 AWAITING_USER 状态）。"""
         ctx = self._session_manager.get_context(session_id)
         if ctx is None:
             return [ACPMessage.error(ErrorCode.SESSION_NOT_FOUND, f"会话 '{session_id}' 不存在")]
 
-        if ctx.status != SessionStatus.PAUSED.value:
+        if ctx.status not in (SessionStatus.PAUSED.value, SessionStatus.AWAITING_USER.value):
             return [ACPMessage.error(ErrorCode.SESSION_NOT_PAUSED, f"会话状态为 {ctx.status}，无法恢复")]
 
         if not ctx.checkpoint:
@@ -547,7 +698,7 @@ class ACPServer:
         if ctx is None:
             return ACPMessage.error(ErrorCode.SESSION_NOT_FOUND, f"会话不存在: {session_id}", request_id=request.id)
 
-        if ctx.status != SessionStatus.PAUSED.value:
+        if ctx.status not in (SessionStatus.PAUSED.value, SessionStatus.AWAITING_USER.value):
             return ACPMessage.error(
                 ErrorCode.SESSION_NOT_PAUSED,
                 f"会话状态为 {ctx.status}，无法恢复",

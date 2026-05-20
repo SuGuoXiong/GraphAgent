@@ -174,6 +174,34 @@
     .sidebar.open { display:flex; }
     .message { max-width:95%; }
   }
+
+  .ask-user-card {
+    align-self:center; max-width:85%; background: var(--card-bg);
+    border:1px solid var(--accent); border-radius: var(--radius);
+    padding:16px 20px; animation: fadeIn 0.2s ease; margin:8px 0;
+  }
+  .ask-user-card .question { font-size:14px; margin-bottom:12px; line-height:1.6; }
+  .ask-user-card .options { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+  .ask-user-card .option-btn {
+    padding:8px 16px; border-radius: var(--radius-sm);
+    border:1px solid var(--border); background: var(--card-bg);
+    color: var(--text); cursor:pointer; font-size:13px;
+    transition: all 0.15s;
+  }
+  .ask-user-card .option-btn:hover { border-color: var(--accent); background: #1e2550; }
+  .ask-user-card .reply-area { display:flex; gap:8px; margin-top:12px; }
+  .ask-user-card .reply-input {
+    flex:1; padding:8px 12px; border:1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg); color: var(--text); font-size:13px; outline:none;
+  }
+  .ask-user-card .reply-input:focus { border-color: var(--accent); }
+  .ask-user-card .send-btn {
+    padding:8px 20px; background: var(--accent); color:#fff;
+    border:none; border-radius: var(--radius-sm); cursor:pointer; font-size:13px; white-space:nowrap;
+  }
+  .ask-user-card .send-btn:hover { background: var(--accent-hover); }
+  .ask-user-card .send-btn:disabled { opacity:0.4; cursor:not-allowed; }
+  .ask-user-card .approval-btns { display:flex; gap:8px; margin-top:12px; }
 </style>
 </head>
 <body>
@@ -394,7 +422,7 @@
   // ── SSE streaming ────────────────────────────
   async function sendMessage() {
     if (isStreaming || !activeSessionId) return;
-    if (sessionStatus === 'paused' || sessionStatus === 'running' || sessionStatus === 'resuming') return;
+    if (sessionStatus === 'paused' || sessionStatus === 'running' || sessionStatus === 'resuming' || sessionStatus === 'awaiting_user') return;
 
     // 如果会话处于 paused 状态但用户输入了新消息，放弃旧检查点重新开始
     if (sessionStatus === 'paused') {
@@ -513,6 +541,10 @@
         addEvent('phase', '执行完成 · 轮次 ' + (msg.payload.turn_count || ''));
         updateSessionStatus('completed');
         break;
+      case 'ask_user':
+        handleAskUser(msg.payload);
+        updateSessionStatus('awaiting_user');
+        break;
       case 'execution_paused':
         addEvent('phase', '执行已暂停 · ' + (msg.payload.recovery_hint || ''));
         if (msg.payload.checkpoint_summary) {
@@ -552,7 +584,8 @@
 
     var labels = {
       idle: '等待输入', running: '执行中', paused: '已暂停',
-      resuming: '恢复中', completed: '已完成', expired: '已过期'
+      resuming: '恢复中', completed: '已完成', expired: '已过期',
+      awaiting_user: '等待用户回答'
     };
     if (text) text.textContent = labels[status] || status;
 
@@ -565,6 +598,11 @@
     } else if (status === 'paused') {
       if (btnPause) btnPause.style.display = 'none';
       if (btnResume) btnResume.style.display = '';
+      if (btnSend) btnSend.disabled = true;
+      if (inputArea) inputArea.disabled = true;
+    } else if (status === 'awaiting_user') {
+      if (btnPause) btnPause.style.display = 'none';
+      if (btnResume) btnResume.style.display = 'none';
       if (btnSend) btnSend.disabled = true;
       if (inputArea) inputArea.disabled = true;
     } else {
@@ -826,6 +864,8 @@
         updateSessionStatus(data.status);
         if (data.status === 'paused' && data.checkpoint) {
           addEvent('phase', '会话已暂停 · ' + (data.checkpoint.recovery_hint || ''));
+        } else if (data.status === 'awaiting_user') {
+          addEvent('phase', 'Agent 正在等待你的回答');
         }
       } else {
         updateSessionStatus('idle');
@@ -891,6 +931,137 @@
     } catch(e) {}
     setStatus(false, '未连接');
     return false;
+  }
+
+  // ── Ask User interaction ─────────────────────
+  function handleAskUser(payload) {
+    var container = el('#chatMessages');
+    var card = document.createElement('div');
+    card.className = 'ask-user-card';
+    card.id = 'ask-user-' + Date.now();
+
+    var questionHtml = '<div class="question">' + escHtml(payload.question || '') + '</div>';
+
+    var showOptions = payload.options && Array.isArray(payload.options) && payload.options.length > 0;
+    var isApproval = payload.require_approval;
+    var html = questionHtml;
+
+    if (isApproval) {
+      html += '<div class="approval-btns">' +
+        '<button class="btn btn-success" data-reply="批准">批准</button>' +
+        '<button class="btn btn-danger" data-reply="拒绝">拒绝</button>' +
+        '</div>';
+      html += '<div class="reply-area" style="margin-top:8px;">' +
+        '<input class="reply-input" type="text" placeholder="或输入说明...">' +
+        '<button class="send-btn">发送</button>' +
+        '</div>';
+    } else if (showOptions) {
+      html += '<div class="options">';
+      for (var i = 0; i < payload.options.length; i++) {
+        html += '<button class="option-btn" data-option="' + i + '" data-text="' + escHtml(payload.options[i]) + '">' +
+          escHtml(payload.options[i]) + '</button>';
+      }
+      html += '</div>';
+      html += '<div class="reply-area">' +
+        '<input class="reply-input" type="text" placeholder="或输入你的回答...">' +
+        '<button class="send-btn">发送</button>' +
+        '</div>';
+    } else {
+      html += '<div class="reply-area">' +
+        '<input class="reply-input" type="text" placeholder="输入你的回答...">' +
+        '<button class="send-btn">发送</button>' +
+        '</div>';
+    }
+
+    card.innerHTML = html;
+    container.appendChild(card);
+    scrollToBottom();
+
+    // Option buttons
+    var optionBtns = card.querySelectorAll('.option-btn');
+    for (var i = 0; i < optionBtns.length; i++) {
+      (function(btn) {
+        btn.addEventListener('click', function() {
+          var optIdx = parseInt(btn.getAttribute('data-option'));
+          var optText = btn.getAttribute('data-text');
+          disableCard(card);
+          addEvent('phase', '已选择: ' + optText);
+          submitReply(optText, optIdx);
+        });
+      })(optionBtns[i]);
+    }
+
+    // Approval buttons
+    var approveBtns = card.querySelectorAll('.approval-btns .btn');
+    for (var j = 0; j < approveBtns.length; j++) {
+      (function(btn) {
+        btn.addEventListener('click', function() {
+          var replyText = btn.getAttribute('data-reply');
+          disableCard(card);
+          addEvent('phase', '已选择: ' + replyText);
+          submitReply(replyText, null);
+        });
+      })(approveBtns[j]);
+    }
+
+    // Send button for free-text reply
+    var sendBtn = card.querySelector('.send-btn');
+    var replyInput = card.querySelector('.reply-input');
+    if (sendBtn && replyInput) {
+      sendBtn.addEventListener('click', function() {
+        var text = replyInput.value.trim();
+        if (!text) return;
+        disableCard(card);
+        addEvent('phase', '已回复: ' + text);
+        submitReply(text, null);
+      });
+      replyInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          var text = replyInput.value.trim();
+          if (!text) return;
+          disableCard(card);
+          addEvent('phase', '已回复: ' + text);
+          submitReply(text, null);
+        }
+      });
+      replyInput.focus();
+    }
+  }
+
+  function disableCard(card) {
+    var btns = card.querySelectorAll('button');
+    for (var i = 0; i < btns.length; i++) { btns[i].disabled = true; }
+    var inputs = card.querySelectorAll('input');
+    for (var j = 0; j < inputs.length; j++) { inputs[j].disabled = true; }
+  }
+
+  async function submitReply(reply, selectedOption) {
+    try {
+      var resp = await fetch(BASE + '/acp/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          version: '1.0', type: 'request', event: 'reply_user',
+          id: randId(), timestamp: new Date().toISOString(),
+          payload: {
+            session_id: activeSessionId,
+            reply: reply || '',
+            selected_option: selectedOption,
+          },
+        }),
+      });
+      var data = await resp.json();
+      if (data.event === 'error') {
+        addEvent('error', '回复失败: ' + (data.payload && data.payload.message || '未知错误'));
+        return false;
+      }
+      return true;
+    } catch(e) {
+      console.error('[submitReply] error:', e);
+      addEvent('error', '回复连接错误: ' + e.message);
+      return false;
+    }
   }
 
   // ── Init ──────────────────────────────────────

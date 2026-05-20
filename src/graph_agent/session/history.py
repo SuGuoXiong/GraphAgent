@@ -54,7 +54,10 @@ class ConversationHistory:
     def add_agent_messages(self, messages: list[MessageBlock]) -> None:
         """批量添加 Agent 侧消息。"""
         for msg in messages:
-            msg.metadata.setdefault("turn_index", self.turn_count)
+            if msg.metadata is None:
+                msg.metadata = {"turn_index": self.turn_count}
+            else:
+                msg.metadata.setdefault("turn_index", self.turn_count)
         self.messages.extend(messages)
         self._touch()
 

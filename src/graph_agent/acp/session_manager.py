@@ -262,8 +262,8 @@ class SessionManager:
             except (ValueError, TypeError):
                 expired.append(sid)
 
-            # 检查 PAUSED 状态超时
-            if ctx.status == SessionStatus.PAUSED.value and ctx.checkpoint:
+            # 检查 PAUSED / AWAITING_USER 状态超时
+            if ctx.status in (SessionStatus.PAUSED.value, SessionStatus.AWAITING_USER.value) and ctx.checkpoint:
                 max_pause = getattr(self._acp_config, 'max_pause_duration', 3600)
                 ckpt_time = ctx.checkpoint.get("created_at", "")
                 if ckpt_time:
