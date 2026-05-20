@@ -190,6 +190,13 @@
       </div>
     </div>
     <div class="sidebar-footer">
+      <div style="margin-bottom:8px;">
+        <input type="text" id="serverUrl" spellcheck="false"
+         style="width:100%;padding:6px 8px;border:1px solid var(--border-color);border-radius:6px;
+                background:var(--bg-secondary);color:var(--text-primary);font-size:12px;
+                font-family:monospace;box-sizing:border-box;"
+         title="ACP 服务地址">
+      </div>
       <div class="status-indicator">
         <span class="status-dot disconnected" id="statusDot"></span>
         <span id="statusText">检测连接中…</span>
@@ -279,7 +286,7 @@
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    html = html.replace(/(^|\s)\*([^*\s]+)\*(\s|$)/g, '$1<em>$2</em>$3');
     html = html.replace(/^&gt; (.*)$/gm, '<blockquote>$1</blockquote>');
     html = html.replace(/^[\-\*] (.*)$/gm, '<li>$1</li>');
     var hasList = false;
@@ -290,7 +297,7 @@
   }
 
   // ── State ────────────────────────────────────
-  var BASE = window.location.origin;
+  var BASE = localStorage.getItem('ga_server_url') || 'http://127.0.0.1:8080';
   var activeSessionId = null;
   var sessionStatus = 'idle';  // 当前会话状态
   var sessions = [];
@@ -890,6 +897,22 @@
   function init() {
     console.log('[init] GraphAgent Web UI starting...');
     console.log('[init] BASE:', BASE);
+
+    // Server URL input
+    var serverUrlInput = el('#serverUrl');
+    serverUrlInput.value = BASE;
+    serverUrlInput.addEventListener('change', function() {
+      var url = this.value.trim().replace(/\/$/, '');
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        url = 'http://' + url;
+      }
+      localStorage.setItem('ga_server_url', url);
+      BASE = url;
+      console.log('[init] Server URL changed to:', BASE);
+      checkHealth().then(function(ok) {
+        if (ok) listSessions();
+      });
+    });
 
     // Wire up buttons via addEventListener (not inline onclick)
     el('#btnNewSession').addEventListener('click', createSession);

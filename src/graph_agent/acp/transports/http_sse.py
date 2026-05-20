@@ -71,9 +71,8 @@ class HTTPSSETransport(ACPTransport):
     # ── FastAPI 应用构建 ──────────────────────────────────
 
     def _build_app(self) -> None:
-        from pathlib import Path
         from fastapi import FastAPI, Body, Query, Request
-        from fastapi.responses import JSONResponse, HTMLResponse
+        from fastapi.responses import JSONResponse
         from fastapi.middleware.cors import CORSMiddleware
         from sse_starlette.sse import EventSourceResponse
 
@@ -217,14 +216,6 @@ class HTTPSSETransport(ACPTransport):
                     "recovery_hint": ctx.checkpoint.get("recovery_hint", ""),
                 }
             return JSONResponse(result)
-
-        @app.get("/", response_class=HTMLResponse)
-        async def web_ui():
-            """Serve the GraphAgent web UI."""
-            ui_path = Path(__file__).parent.parent.parent / "web_ui" / "index.html"
-            if ui_path.exists():
-                return HTMLResponse(ui_path.read_text(encoding="utf-8"))
-            return HTMLResponse("<h1>GraphAgent Web UI not found</h1>", status_code=404)
 
         self._app = app
 

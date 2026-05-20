@@ -225,10 +225,12 @@ async def run_acp_server(port: int = 8080):
     print(f"POST /acp/message  — 发送请求")
     print(f"GET  /acp/events   — SSE 事件流")
     print(f"GET  /health       — 健康检查")
-    print(f"GET  /             — Web UI")
     print(f"会话存储: {server.session_manager.storage_dir}")
     print(f"最大并发会话: {config.max_sessions}")
-    print(f"按 Ctrl+C 停止服务\n")
+    print(f"按 Ctrl+C 停止服务")
+    print(f"\n启动 Web UI（新终端）：")
+    print(f"  cd web_ui && py -m http.server 8020 --bind 127.0.0.1")
+    print(f"  然后浏览器打开: http://127.0.0.1:8020\n")
 
     transport = HTTPSSETransport(server, config)
     try:

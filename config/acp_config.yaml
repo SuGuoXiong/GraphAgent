@@ -10,6 +10,8 @@ acp:
     cors:
       allowed_origins:
         - "http://localhost:3000"
+        - "http://127.0.0.1:8020"
+        - "http://localhost:8020"
       allowed_methods:
         - GET
         - POST
