@@ -6,6 +6,7 @@ from graph_agent.orchestration.subagent import (
     SubAgentConfig, SubAgentRegistry, register_script_tools,
 )
 from graph_agent.tools import ToolCenter
+from graph_agent.mcp import MCPManager
 from graph_agent.message import (
     create_assistant_message,
     agent_messages_to_langchain,
@@ -16,6 +17,10 @@ from graph_agent.acp.checkpoint import AskUserException
 
 _tool_center = ToolCenter()
 _tool_center.auto_discover()
+
+# 注册 MCP 工具（在 SubAgentRegistry 初始化前，确保所有工具就绪）
+_mcp_manager = MCPManager(_tool_center)
+_mcp_manager.setup()
 
 # 全局 SubAgentRegistry 单例，由 SkillRegister 驱动
 _registry = SubAgentRegistry()
