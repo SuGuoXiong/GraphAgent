@@ -2,7 +2,9 @@
 
 from graph_agent.orchestration.prompt_loader import PromptLoader
 from graph_agent.orchestration.state import OrchestrationState, OrchestrationPhase
-from graph_agent.orchestration.subagent import SubAgentConfig, SubAgentRegistry
+from graph_agent.orchestration.subagent import (
+    SubAgentConfig, SubAgentRegistry, register_script_tools,
+)
 from graph_agent.tools import ToolCenter
 from graph_agent.message import (
     create_assistant_message,
@@ -15,6 +17,9 @@ from graph_agent.acp.checkpoint import AskUserException
 _tool_center = ToolCenter()
 _tool_center.auto_discover()
 
+# 全局 SubAgentRegistry 单例，由 SkillRegister 驱动
+_registry = SubAgentRegistry()
+
 
 def _run_subagent(config: SubAgentConfig, task_description: str,
                   task_id: str, state: OrchestrationState,
@@ -22,6 +27,7 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
     """在 ReAct 循环中运行单个 SubAgent，返回执行结果。
 
     每个 SubAgent 只能看见和使用其系统提示词中声明的工具。
+    对于用户自定义 Skill，其 scripts/ 中的脚本会被动态注册为工具。
     """
     from graph_agent.llm import LLMFactory
     from graph_agent.session.persistence import sanitize_text
@@ -35,7 +41,14 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
     provider = LLMFactory.create_from_env()
     llm = provider.get_chat_model()
 
+    # 用户自定义 Skill：动态注册 scripts/ 中的脚本工具
+    skill_def = config._skill_def
+    registered_script_names = []
+    if skill_def is not None and skill_def.meta.type == "user" and skill_def.script_files:
+        registered_script_names = register_script_tools(skill_def, _tool_center)
+
     tool_names = set(config.tools)
+    tool_names.update(registered_script_names)
     all_tools = {t.name: t for t in _tool_center.list_tools()}
     subagent_tools = [all_tools[name] for name in tool_names if name in all_tools]
     langchain_tools = [t.to_langchain_tool() for t in subagent_tools]
@@ -49,7 +62,6 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
     messages = [SystemMessage(content=system_prompt),
                 HumanMessage(content=sanitize_text(f"请完成以下任务:\n{task_description}"))]
 
-    # 注入恢复消息（ask_user 中断恢复时，将 AIMessage + ToolMessage 注入到 ReAct 循环中）
     injected = state.get("_injected_messages")
     if injected:
         messages.extend(injected)
@@ -90,11 +102,7 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
 
 
 def subagent_exec_node(state: OrchestrationState) -> dict:
-    """SubAgent 执行节点：串行执行所有 running 状态的子任务。
-
-    每个 SubAgent 在独立的 ReAct 循环中运行，
-    只能看见和使用其配置文件中声明的工具。
-    """
+    """SubAgent 执行节点：串行执行所有 running 状态的子任务。"""
     from graph_agent.acp.checkpoint import _check_interrupt
 
     task_plan = state.get("task_plan")
@@ -114,8 +122,7 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
         config = None
         if task.assigned_agent:
             try:
-                registry = SubAgentRegistry()
-                config = registry.get(task.assigned_agent)
+                config = _registry.get(task.assigned_agent)
             except KeyError:
                 pass
 
@@ -156,10 +163,8 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
         )
         result_messages.append(msg)
 
-        # 每完成一个子任务后检查中断信号
         _check_interrupt(state)
 
-    # 检查是否还有待调度的子任务（依赖刚完成的任务已满足）
     has_pending = any(t.status == "pending" for t in task_plan.sub_tasks)
 
     _check_interrupt(state)
@@ -171,3 +176,4 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
         "ga_messages": result_messages,
         "messages": agent_messages_to_langchain(result_messages),
     }
+
