@@ -1,7 +1,7 @@
 [project]
-name = "simple-agent-template"
-version = "0.1.0"
-description = "Minimal LangChain agent template for LangSmith/LangGraph deployment"
+name = "graph-agent"
+version = "0.2.0"
+description = "基于 LangGraph 的多 Agent 编排框架，支持三层编排、Skill 系统、MCP 协议、人机协作"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

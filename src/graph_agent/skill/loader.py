@@ -13,7 +13,7 @@ logger = logging.getLogger("graph_agent")
 class SkillLoader:
     """Skill 加载器——扫描内置 Skill 和用户自定义 Skill 并加载。
 
-    内置 Skill：src/graph_agent/skills/ 下的 .md 文件（一个文件 = 一个 Skill）。
+    内置 Skill：prompts/skills/ 下的 .md 文件（一个文件 = 一个 Skill）。
     用户 Skill：项目根目录 skills/ 下的子文件夹（一个文件夹 = 一个 Skill，含 SKILL.md）。
 
     加载顺序：先加载内置 Skill，再加载用户 Skill。
@@ -21,13 +21,14 @@ class SkillLoader:
     """
 
     def __init__(self, user_skills_root: str | None = None):
-        self._builtin_root = Path(__file__).parent.parent / "skills"
+        # 内置 Skill 存放在 prompts/skills/，与 prompts/guard/、prompts/plan/ 同级
+        _project_root = Path(__file__).parent.parent.parent.parent
+        self._builtin_root = _project_root / "prompts" / "skills"
 
         if user_skills_root is None:
             user_skills_root = os.getenv("SKILLS_ROOT")
         if user_skills_root is None:
-            project_root = Path(__file__).parent.parent.parent.parent
-            user_skills_root = str(project_root / "skills")
+            user_skills_root = str(_project_root / "skills")
         self._user_root = Path(user_skills_root)
 
         self._parser = SkillParser()

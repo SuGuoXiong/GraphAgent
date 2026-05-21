@@ -1,6 +1,5 @@
 """SubAgent 执行节点——在 ReAct 循环中运行 SubAgent 完成子任务。"""
 
-from graph_agent.orchestration.prompt_loader import PromptLoader
 from graph_agent.orchestration.state import OrchestrationState, OrchestrationPhase
 from graph_agent.orchestration.subagent import (
     SubAgentConfig, SubAgentRegistry, register_script_tools,
@@ -27,8 +26,7 @@ _registry = SubAgentRegistry()
 
 
 def _run_subagent(config: SubAgentConfig, task_description: str,
-                  task_id: str, state: OrchestrationState,
-                  loader: PromptLoader) -> str:
+                  task_id: str, state: OrchestrationState) -> str:
     """在 ReAct 循环中运行单个 SubAgent，返回执行结果。
 
     每个 SubAgent 只能看见和使用其系统提示词中声明的工具。
@@ -59,7 +57,6 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
     langchain_tools = [t.to_langchain_tool() for t in subagent_tools]
 
     system_prompt = sanitize_text(config.load_system_prompt(
-        loader,
         task_description=task_description,
     ))
     llm_with_tools = llm.bind_tools(langchain_tools) if langchain_tools else llm
@@ -116,7 +113,6 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
 
     get_tracer().trace_phase("子任务执行", "SubAgent", "串行执行所有就绪的子任务")
 
-    loader = PromptLoader()
     sub_results = dict(state.get("sub_results", {}))
     result_messages = []
 
@@ -137,7 +133,7 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
             continue
 
         try:
-            result = _run_subagent(config, task.description, task.task_id, state, loader)
+            result = _run_subagent(config, task.description, task.task_id, state)
         except AskUserException as e:
             full_state = dict(state)
             if e.state and e.state.get("llm_response"):

@@ -1,11 +1,10 @@
 """SubAgent 注册中心——全部配置来自 SkillRegister。
 
-Skill 系统是 SubAgent 的唯一来源，config/subagents.yaml 不再使用。
+Skill 系统是 SubAgent 的唯一来源，系统提示词由 build_skill_system_prompt() 动态生成。
 """
 
 from dataclasses import dataclass
 
-from graph_agent.orchestration.prompt_loader import PromptLoader
 from graph_agent.skill.models import SkillDef
 
 
@@ -16,32 +15,23 @@ class SubAgentConfig:
     description: str
     skills: list[str]
     tools: list[str]
-    prompt_file: str
     llm_config: dict | None = None
     max_iterations: int = 5
     _skill_def: SkillDef | None = None
 
-    def load_system_prompt(self, loader: PromptLoader, **variables) -> str:
-        """加载系统提示词。
-
-        如果配置来自 Skill 系统（有 _skill_def），则动态构建提示词；
-        否则回退到旧的 prompt_file 加载方式（向后兼容）。
-        """
-        if self._skill_def is not None:
-            return build_skill_system_prompt(
-                self._skill_def,
-                variables.get("task_description", ""),
-            )
-        variables.setdefault("available_tools", ", ".join(self.tools))
-        return loader.load_with_context("subagent", self.prompt_file, **variables)
+    def load_system_prompt(self, **variables) -> str:
+        """根据 SkillDef 动态构建系统提示词。"""
+        return build_skill_system_prompt(
+            self._skill_def,
+            variables.get("task_description", ""),
+        )
 
 
 class SubAgentRegistry:
     """SubAgent 注册中心——全部配置来自 SkillRegister。"""
 
-    def __init__(self, skill_register=None, prompt_loader=None):
+    def __init__(self, skill_register=None):
         self._agents: dict[str, SubAgentConfig] = {}
-        self._prompt_loader = prompt_loader or PromptLoader()
 
         if skill_register is not None:
             self._skill_register = skill_register
@@ -62,7 +52,6 @@ class SubAgentRegistry:
                 description=skill_config["description"],
                 skills=skill_config["skills"],
                 tools=all_tools,
-                prompt_file=skill_config["name"],
                 max_iterations=skill_config.get("max_iterations", 5),
                 llm_config=skill_config.get("llm_config"),
                 _skill_def=skill_config.get("_skill_def"),
