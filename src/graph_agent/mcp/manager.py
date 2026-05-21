@@ -58,22 +58,21 @@ class MCPManager:
             )
 
     def shutdown(self) -> None:
-        """关闭所有 MCP 连接和后台事件循环。"""
+        """停止后台事件循环，释放所有 MCP 连接。
+
+        MCP session 和 transport 上下文的创建/销毁必须发生在同一 asyncio task 中，
+        否则 anyio 的 cancel scope 会抛出 RuntimeError。由于后台线程是 daemon 线程，
+        随进程退出自然清理即可。这里只停止事件循环。
+        """
         if self._loop is None:
             return
-
-        future = asyncio.run_coroutine_threadsafe(
-            self._async_shutdown(), self._loop
-        )
-        try:
-            future.result(timeout=10)
-        except Exception:
-            pass
 
         self._loop.call_soon_threadsafe(self._loop.stop)
         if self._loop_thread is not None:
             self._loop_thread.join(timeout=5)
 
+        _sessions.clear()
+        self._loop.close()
         self._loop = None
         self._loop_thread = None
 
@@ -94,21 +93,6 @@ class MCPManager:
                     "MCP setup",
                     f"连接 MCP Server '{cfg.name}' 失败: {e}",
                 )
-
-    async def _async_shutdown(self) -> None:
-        """异步关闭所有 MCP 连接。"""
-        for name, ctx in list(_sessions.items()):
-            try:
-                if ctx._session_ctx is not None:
-                    await ctx._session_ctx.__aexit__(None, None, None)
-            except Exception:
-                pass
-            try:
-                if ctx._transport_ctx is not None:
-                    await ctx._transport_ctx.__aexit__(None, None, None)
-            except Exception:
-                pass
-        _sessions.clear()
 
     async def _connect_server(self, cfg) -> None:
         """连接单个 MCP Server，发现并注册其工具。"""
