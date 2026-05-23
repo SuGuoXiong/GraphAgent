@@ -12,34 +12,48 @@ from langchain_core.tools import StructuredTool
 
 
 class AgentTool:
-    """封装单个工具的元数据和执行逻辑。"""
+    """封装单个工具的元数据和执行逻辑。
+
+    risk_level 决定执行方式：low → 直接执行，medium → 进程隔离，high → Docker 沙箱。
+    """
 
     name: str
     description: str
     parameters: list[dict[str, str]]
     func: Callable[..., str]
+    risk_level: str
 
     def __init__(
         self,
         name: str,
         description: str,
         func: Callable[..., str],
-        parameters: list[dict[str, str]]
+        parameters: list[dict[str, str]],
+        risk_level: str = "medium",
     ):
         self.name = name
         self.description = description
         self.func = func
         self.parameters = parameters
+        self.risk_level = risk_level
 
     def run(self, **kwargs: Any) -> str:
-        """执行工具逻辑（含 before/after_tool_call Hook 检查点）。"""
+        """执行工具逻辑（含 before/after_tool_call Hook 检查点）。
+
+        流程：
+        1. before_tool_call Hook 链（含 RBAC 校验）
+        2. 根据 risk_level 选择执行方式
+        3. after_tool_call Hook 链
+        """
         from graph_agent.hook import get_hook_executor, HookContext, HookAction, HookAbortError
+        from graph_agent.node.subagent import get_current_agent_name
 
         executor = get_hook_executor()
         ctx = HookContext(
             checkpoint="before_tool_call",
             tool_name=self.name,
             tool_args=kwargs,
+            agent_name=get_current_agent_name(),
         )
         ctx, decision = executor.execute("before_tool_call", ctx)
 
@@ -48,11 +62,17 @@ class AgentTool:
         if decision and decision.action == HookAction.ABORT:
             raise HookAbortError(decision.reason)
 
-        # 应用 Type 1 Hook 可能修改的参数
         kwargs = ctx.tool_args or kwargs
 
         try:
-            result = self.func(**kwargs)
+            if self.risk_level == "low":
+                result = self._run_direct(kwargs)
+            elif self.risk_level == "medium":
+                result = self._run_isolated(kwargs)
+            elif self.risk_level == "high":
+                result = self._run_in_sandbox(kwargs)
+            else:
+                result = self._run_direct(kwargs)
         except Exception as e:
             ctx.tool_result = None
             ctx.tool_error = str(e)
@@ -65,6 +85,75 @@ class AgentTool:
         executor.execute("after_tool_call", ctx)
 
         return result
+
+    def _run_direct(self, tool_args: dict) -> str:
+        """直接在当前进程中执行（低风险工具）。"""
+        return self.func(**tool_args)
+
+    def _run_isolated(self, tool_args: dict) -> str:
+        """在独立子进程中执行（中风险工具）。"""
+        import multiprocessing
+        import json
+
+        result_queue = multiprocessing.Queue()
+        args_json = json.dumps(tool_args)
+        p = multiprocessing.Process(
+            target=_isolated_worker, args=(self.func, args_json, result_queue)
+        )
+        p.start()
+        p.join(timeout=30)
+        if p.is_alive():
+            p.terminate()
+            p.join()
+            return "Error: 工具执行超时（30s）"
+        if not result_queue.empty():
+            status, result = result_queue.get()
+            if status == "ok":
+                return result
+            return f"Error: {result}"
+        return "Error: 工具执行异常"
+
+    def _run_in_sandbox(self, tool_args: dict) -> str:
+        """在 Docker 沙箱中执行（高风险工具）。
+
+        Docker 不可用时降级为进程隔离并发出警告。
+        """
+        import subprocess
+        import json
+        import tempfile
+        import os
+        import warnings
+
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.json', delete=False
+        ) as f:
+            json.dump({"tool": self.name, "args": tool_args}, f)
+            input_file = f.name
+
+        try:
+            result = subprocess.run([
+                "docker", "run", "--rm",
+                "--network", "none",
+                "--memory", "256m",
+                "--cpus", "1",
+                "--read-only",
+                "--tmpfs", "/tmp:noexec",
+                "-v", f"{input_file}:/input.json:ro",
+                "graphagent-sandbox:latest",
+                "python", "-m", "sandbox_executor",
+                "--input", "/input.json",
+            ], capture_output=True, text=True, timeout=60)
+            return result.stdout if result.returncode == 0 else f"Sandbox Error: {result.stderr}"
+        except subprocess.TimeoutExpired:
+            return "Error: 沙箱执行超时（60s）"
+        except FileNotFoundError:
+            warnings.warn("Docker 不可用，高风险工具降级为进程隔离执行")
+            return self._run_isolated(tool_args)
+        finally:
+            try:
+                os.unlink(input_file)
+            except OSError:
+                pass
 
     def to_langchain_tool(self) -> StructuredTool:
         """转换为 LangChain 兼容的工具。"""
@@ -134,12 +223,16 @@ class ToolCenter:
                     self.register(attr)
 
 
-def tool(name: str, description: str):
+def tool(name: str, description: str, risk_level: str = "medium"):
     """工具装饰器，用于定义 Agent 工具。
 
     Args:
         name: 工具名称
         description: 工具功能描述，供 LLM 理解
+        risk_level: 风险等级，low/medium/high，默认 medium
+                    low   → 直接执行
+                    medium → 进程隔离
+                    high  → Docker 沙箱
     """
     def decorator(func: Callable[..., str]) -> AgentTool:
         sig = signature(func)
@@ -151,6 +244,21 @@ def tool(name: str, description: str):
                 "type": str(param.annotation) if param.annotation != param.empty else "Any"
             })
 
-        return AgentTool(name, description, func, parameters)
+        return AgentTool(name, description, func, parameters, risk_level=risk_level)
 
     return decorator
+
+
+def _isolated_worker(func, args_json, result_queue):
+    """模块级函数，在子进程中执行工具调用。
+
+    必须是模块级函数（非闭包/内嵌函数），因为 multiprocessing
+    使用 pickle 序列化，闭包和实例方法无法被 pickle。
+    """
+    import json
+    try:
+        args = json.loads(args_json)
+        result = func(**args)
+        result_queue.put(("ok", result))
+    except Exception as e:
+        result_queue.put(("error", str(e)))

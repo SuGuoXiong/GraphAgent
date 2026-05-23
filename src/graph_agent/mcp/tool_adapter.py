@@ -88,19 +88,26 @@ def _json_schema_to_params(input_schema: dict) -> list[dict[str, Any]]:
     return params
 
 
-def wrap_mcp_tools(mcp_tools: list[Any], server_name: str) -> list[Any]:
+def wrap_mcp_tools(mcp_tools: list[Any], server_name: str,
+                   risk_overrides: dict[str, str] | None = None) -> list[Any]:
     """将一批 MCP Tool 对象包装为 AgentTool 列表。
 
     每个 AgentTool 命名为 mcp__<server_name>__<tool_name>，
-    避免与内置工具名称冲突。
+    避免与内置工具名称冲突。MCP 工具默认 risk_level="high"，
+    可通过 risk_overrides 降低。
     """
     from graph_agent.tools.base import AgentTool
+
+    overrides = risk_overrides or {}
 
     agents = []
     for t in mcp_tools:
         tool_name = f"mcp__{server_name}__{t.name}"
         params = _json_schema_to_params(t.inputSchema)
         description = t.description or f"MCP 工具: {t.name} (来自 Server '{server_name}')"
+
+        # 应用 risk_overrides（key 为原始 MCP 工具名，不含 mcp__ 前缀）
+        risk_level = overrides.get(t.name, "high")
 
         def make_func(srv_name: str, mcp_tool_name: str):
             def tool_func(**kwargs) -> str:
@@ -112,6 +119,7 @@ def wrap_mcp_tools(mcp_tools: list[Any], server_name: str) -> list[Any]:
             description=description,
             func=make_func(server_name, t.name),
             parameters=params,
+            risk_level=risk_level,
         )
         agents.append(agent)
 

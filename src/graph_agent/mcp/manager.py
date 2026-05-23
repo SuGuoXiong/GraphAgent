@@ -104,7 +104,7 @@ class MCPManager:
             transport_ctx, session_ctx, session = await self._connect_http(cfg)
 
         result = await session.list_tools()
-        tools = wrap_mcp_tools(result.tools, cfg.name)
+        tools = wrap_mcp_tools(result.tools, cfg.name, cfg.risk_overrides)
         for tool in tools:
             self._tool_center.register(tool)
 

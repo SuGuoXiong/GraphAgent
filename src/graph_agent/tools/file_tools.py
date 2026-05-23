@@ -15,7 +15,7 @@ def _resolve_path(path: str) -> Path:
     return resolved
 
 
-@tool("read_file", "读取指定文件的内容，返回文本内容。参数 file_path: 文件路径")
+@tool("read_file", "读取指定文件的内容，返回文本内容。参数 file_path: 文件路径", risk_level="low")
 def read_file(file_path: str) -> str:
     """读取文件内容。
 
@@ -38,7 +38,7 @@ def read_file(file_path: str) -> str:
         return f"错误: 读取文件失败 - {e}"
 
 
-@tool("write_file", "将内容写入指定文件，覆盖已有内容。参数 file_path: 文件路径, content: 要写入的内容")
+@tool("write_file", "将内容写入指定文件，覆盖已有内容。参数 file_path: 文件路径, content: 要写入的内容", risk_level="medium")
 def write_file(file_path: str, content: str) -> str:
     """写入内容到文件。
 
@@ -58,7 +58,7 @@ def write_file(file_path: str, content: str) -> str:
         return f"错误: 写入文件失败 - {e}"
 
 
-@tool("append_file", "向指定文件追加内容，文件不存在时会自动创建。参数 file_path: 文件路径, content: 要追加的内容")
+@tool("append_file", "向指定文件追加内容，文件不存在时会自动创建。参数 file_path: 文件路径, content: 要追加的内容", risk_level="medium")
 def append_file(file_path: str, content: str) -> str:
     """向文件追加内容。
 
@@ -79,7 +79,7 @@ def append_file(file_path: str, content: str) -> str:
         return f"错误: 追加文件失败 - {e}"
 
 
-@tool("list_directory", "列出指定目录下的所有文件和子目录。参数 dir_path: 目录路径")
+@tool("list_directory", "列出指定目录下的所有文件和子目录。参数 dir_path: 目录路径", risk_level="low")
 def list_directory(dir_path: str) -> str:
     """列出目录内容。
 
@@ -109,7 +109,7 @@ def list_directory(dir_path: str) -> str:
         return f"错误: 列出目录失败 - {e}"
 
 
-@tool("delete_file", "删除指定文件。参数 file_path: 文件路径")
+@tool("delete_file", "删除指定文件。参数 file_path: 文件路径", risk_level="high")
 def delete_file(file_path: str) -> str:
     """删除文件。
 
@@ -131,7 +131,7 @@ def delete_file(file_path: str) -> str:
         return f"错误: 删除文件失败 - {e}"
 
 
-@tool("delete_directory", "删除指定目录（包括其所有内容）。参数 dir_path: 目录路径")
+@tool("delete_directory", "删除指定目录（包括其所有内容）。参数 dir_path: 目录路径", risk_level="high")
 def delete_directory(dir_path: str) -> str:
     """删除目录及其所有内容。
 
@@ -153,7 +153,7 @@ def delete_directory(dir_path: str) -> str:
         return f"错误: 删除目录失败 - {e}"
 
 
-@tool("file_exists", "检查文件或目录是否存在。参数 path: 要检查的路径")
+@tool("file_exists", "检查文件或目录是否存在。参数 path: 要检查的路径", risk_level="low")
 def file_exists(check_path: str) -> str:
     """检查文件或目录是否存在。
 

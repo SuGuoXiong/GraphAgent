@@ -42,6 +42,7 @@ class HookContext:
     llm_token_usage: dict | None = None
     session_id: str | None = None
     agent_state: dict | None = None
+    agent_name: str | None = None
 
 
 # Hook 函数类型别名

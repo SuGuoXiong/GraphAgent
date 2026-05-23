@@ -161,6 +161,7 @@ def register_script_tools(skill_def: SkillDef, tool_center) -> list[str]:
                 "type": "string",
                 "description": "传递给脚本的额外命令行参数",
             }],
+            risk_level="high",
         )
         tool_center.register(tool)
         registered.append(tool_name)

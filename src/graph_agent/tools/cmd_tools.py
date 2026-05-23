@@ -6,7 +6,7 @@ from graph_agent.tools.base import tool
 SAFE_COMMANDS = {"ls", "dir", "pwd", "echo", "cat", "type"}
 
 
-@tool("run_command", "执行shell命令并返回执行结果，仅支持安全的只读命令")
+@tool("run_command", "执行shell命令并返回执行结果，仅支持安全的只读命令", risk_level="medium")
 def run_cmd(cmd: str) -> str:
     try:
         args = shlex.split(cmd)

@@ -32,6 +32,9 @@ class MCPServerConfig:
     timeout: float = 30.0
     sse_read_timeout: float = 300.0
 
+    # 安全配置
+    risk_overrides: dict[str, str] = field(default_factory=dict)
+
     @classmethod
     def from_dict(cls, name: str, data: dict) -> "MCPServerConfig":
         """从 JSON 字典构造配置对象。"""
@@ -47,6 +50,7 @@ class MCPServerConfig:
             headers=data.get("headers"),
             timeout=data.get("timeout", 30.0),
             sse_read_timeout=data.get("sse_read_timeout", 300.0),
+            risk_overrides=data.get("risk_overrides", {}),
         )
 
 

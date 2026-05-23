@@ -5,7 +5,7 @@ from typing import Any
 from graph_agent.tools.base import tool
 
 
-@tool("safe_calculator", "安全地计算简单的算术表达式，支持 +, -, *, /, %, ** 和括号")
+@tool("safe_calculator", "安全地计算简单的算术表达式，支持 +, -, *, /, %, ** 和括号", risk_level="low")
 def calculator(expression: str) -> str:
     """计算算术表达式。
 

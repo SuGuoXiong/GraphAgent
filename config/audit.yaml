@@ -1,0 +1,9 @@
+# 审计日志配置
+
+log_dir: "data/audit"
+max_file_size: 104857600   # 100MB
+retention_days: 30
+enabled: true
+max_result_length: 200
+buffer_max_size: 50
+console_output: false

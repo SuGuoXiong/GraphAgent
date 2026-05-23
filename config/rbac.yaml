@@ -1,0 +1,88 @@
+# RBAC 安全策略配置
+# 策略按优先级从高到低排列，首次匹配即生效。
+# 无匹配策略时触发用户授权（AskUser）。
+
+policies:
+  # ─── MCP 工具策略 ───
+
+  - subject: "subagent:data_engineer"
+    action: "mcp__production_db__*"
+    resource: "*"
+    effect: allow
+    description: "数据工程师可完全操作生产数据库 MCP 工具"
+
+  - subject: "*"
+    action: "mcp__production_db__*"
+    resource: "*"
+    effect: deny
+    description: "除 data_engineer 外禁止操作生产数据库 MCP 工具"
+
+  # ─── 敏感文件策略 ───
+
+  - subject: "plan_agent"
+    action: "read_file"
+    resource: "file:**/*.env"
+    effect: allow
+    description: "仅 PlanAgent 可读取 .env 敏感配置文件"
+
+  - subject: "*"
+    action: "*"
+    resource: "file:**/*.env"
+    effect: deny
+    description: "禁止任意 agent 通过任意工具访问 .env 等敏感配置文件"
+
+  # ─── 文件操作策略 ───
+
+  - subject: "*"
+    action: "write_file"
+    resource: "file:/etc/**"
+    effect: deny
+    description: "禁止通过 write_file 写入 /etc 系统配置目录"
+
+  - subject: "*"
+    action: "delete_file"
+    resource: "file:/*"
+    effect: deny
+    description: "禁止在根目录执行文件删除操作"
+
+  # ─── 命令执行策略 ───
+
+  - subject: "*"
+    action: "run_command"
+    resource: "cmd:rm*"
+    effect: deny
+    description: "禁止执行 rm 系列危险命令"
+
+  - subject: "*"
+    action: "run_command"
+    resource: "cmd:shutdown*"
+    effect: deny
+    description: "禁止执行 shutdown 等系统级命令"
+
+  # ─── SubAgent 专项策略 ───
+
+  - subject: "subagent:code_reviewer"
+    action: "read_*"
+    resource: "*"
+    effect: allow
+    description: "代码审查 Agent 的 read_* 匹配工具自动放行，其余工具触发用户授权"
+
+  - subject: "subagent:system_admin"
+    action: "*"
+    resource: "*"
+    effect: allow
+    description: "系统管理 Agent 拥有完全权限"
+
+  # ─── 防御性策略（纵深防御） ───
+
+  - subject: "guard_agent"
+    action: "*"
+    resource: "*"
+    effect: deny
+    description: "GuardAgent 不执行任何工具"
+
+  - subject: "plan_agent"
+    action: "*"
+    resource: "*"
+    effect: deny
+    description: "PlanAgent 不执行任何工具"

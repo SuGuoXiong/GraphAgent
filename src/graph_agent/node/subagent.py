@@ -1,5 +1,8 @@
 """SubAgent 执行节点——在 ReAct 循环中运行 SubAgent 完成子任务。"""
 
+import threading
+from contextlib import contextmanager
+
 from graph_agent.orchestration.state import OrchestrationState, OrchestrationPhase
 from graph_agent.orchestration.subagent import (
     SubAgentConfig, SubAgentRegistry, register_script_tools,
@@ -23,6 +26,40 @@ _mcp_manager.setup()
 
 # 全局 SubAgentRegistry 单例，由 SkillRegister 驱动
 _registry = SubAgentRegistry()
+
+# Agent 身份上下文（线程局部存储）
+_agent_context = threading.local()
+
+
+def get_current_agent_name() -> str | None:
+    """获取当前线程的 Agent 身份。"""
+    return getattr(_agent_context, 'name', None)
+
+
+def set_current_agent_name(name: str):
+    """设置当前线程的 Agent 身份。"""
+    _agent_context.name = name
+
+
+@contextmanager
+def agent_execution_context(agent_name: str):
+    """在 SubAgent 工具执行期间设置 Agent 身份上下文。
+
+    用法：
+        with agent_execution_context(config.name):
+            # SubAgent ReAct 循环在此执行
+            # 所有工具调用自动携带此 agent_name
+            ...
+    """
+    old = get_current_agent_name()
+    set_current_agent_name(agent_name)
+    try:
+        yield
+    finally:
+        if old is not None:
+            set_current_agent_name(old)
+        else:
+            delattr(_agent_context, 'name')
 
 
 def _run_subagent(config: SubAgentConfig, task_description: str,
@@ -69,36 +106,37 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
         messages.extend(injected)
         state["_injected_messages"] = None
 
-    for _ in range(config.max_iterations):
-        response = llm_with_tools.invoke(messages, config={"run_name": config.name})
-        messages.append(response)
+    with agent_execution_context(config.name):
+        for _ in range(config.max_iterations):
+            response = llm_with_tools.invoke(messages, config={"run_name": config.name})
+            messages.append(response)
 
-        has_tool_calls = (hasattr(response, "tool_calls") and response.tool_calls)
+            has_tool_calls = (hasattr(response, "tool_calls") and response.tool_calls)
 
-        if not has_tool_calls:
-            return response.content if hasattr(response, 'content') else str(response)
+            if not has_tool_calls:
+                return response.content if hasattr(response, 'content') else str(response)
 
-        for tool_call in response.tool_calls:
-            tool_name = tool_call.get("name", "")
-            tool_args = tool_call.get("args", {})
-            tool_id = tool_call.get("id", "")
+            for tool_call in response.tool_calls:
+                tool_name = tool_call.get("name", "")
+                tool_args = tool_call.get("args", {})
+                tool_id = tool_call.get("id", "")
 
-            tool = all_tools.get(tool_name)
-            if tool and tool_name in tool_names:
-                try:
-                    result_text = tool.run(**tool_args)
-                except AskUserException as e:
-                    e.state = {
-                        "llm_response": messages[-1] if messages else None,
-                        "ask_user_tool_id": tool_id,
-                    }
-                    raise
-                except Exception as e:
-                    result_text = f"工具执行错误: {e}"
-            else:
-                result_text = f"错误: 工具 '{tool_name}' 不可用"
+                tool = all_tools.get(tool_name)
+                if tool and tool_name in tool_names:
+                    try:
+                        result_text = tool.run(**tool_args)
+                    except AskUserException as e:
+                        e.state = {
+                            "llm_response": messages[-1] if messages else None,
+                            "ask_user_tool_id": tool_id,
+                        }
+                        raise
+                    except Exception as e:
+                        result_text = f"工具执行错误: {e}"
+                else:
+                    result_text = f"错误: 工具 '{tool_name}' 不可用"
 
-            messages.append(ToolMessage(content=result_text, tool_call_id=tool_id, name=tool_name))
+                messages.append(ToolMessage(content=result_text, tool_call_id=tool_id, name=tool_name))
 
     return messages[-1].content if messages else "执行超限，未获得结果"
 
@@ -177,4 +215,3 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
         "ga_messages": result_messages,
         "messages": agent_messages_to_langchain(result_messages),
     }
-

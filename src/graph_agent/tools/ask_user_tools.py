@@ -16,6 +16,7 @@ from graph_agent.tools.base import tool
         "参数 options 为可选的选项列表，用户可以从中选择一个；"
         "参数 require_approval 为 True 时表示需要用户批准（展示确认/取消按钮）。"
     ),
+    risk_level="low",
 )
 def ask_user(
     question: str,
