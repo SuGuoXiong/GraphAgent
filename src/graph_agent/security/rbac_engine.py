@@ -103,10 +103,21 @@ class RBACEngine:
 _rbac_engine: RBACEngine | None = None
 
 
+def _resolve_config_path(config_path: str) -> str:
+    """将配置路径转为绝对路径，从项目根目录解析。"""
+    from pathlib import Path
+    path = Path(config_path)
+    if path.is_absolute():
+        return str(path)
+    # 从本文件位置向上找项目根目录 (src/graph_agent/security/ → 项目根)
+    project_root = Path(__file__).parent.parent.parent.parent
+    return str(project_root / config_path)
+
+
 def get_rbac_engine(config_path: str = "config/rbac.yaml") -> RBACEngine:
     """获取全局 RBACEngine 单例。"""
     global _rbac_engine
     if _rbac_engine is None:
         from graph_agent.security.rbac_config import RBACConfig
-        _rbac_engine = RBACEngine(RBACConfig(config_path))
+        _rbac_engine = RBACEngine(RBACConfig(_resolve_config_path(config_path)))
     return _rbac_engine

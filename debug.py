@@ -187,18 +187,23 @@ async def run_orchestration():
 
 def _start_web_ui(web_ui_dir: str, host: str = "127.0.0.1", port: int = 8020):
     """在后台线程中启动 Web UI 静态文件服务。"""
-    import os
 
     class _QuietHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, format, *args):
             pass  # 抑制 HTTP 请求日志
 
-    os.chdir(web_ui_dir)
+        def translate_path(self, path):
+            """将 URL 路径映射到 web_ui_dir，不使用 cwd。"""
+            import posixpath
+            path = posixpath.normpath('/' + path)
+            path = path.lstrip('/')
+            return str(Path(web_ui_dir) / path)
+
     try:
         with socketserver.TCPServer((host, port), _QuietHandler) as httpd:
             httpd.serve_forever()
-    finally:
-        os.chdir(Path(__file__).parent)
+    except Exception:
+        pass  # 线程退出时静默处理
 
 
 async def run_acp_server(port: int = 8080):

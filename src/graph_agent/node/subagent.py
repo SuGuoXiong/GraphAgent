@@ -112,6 +112,7 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
         state["_injected_messages"] = None
 
     with agent_execution_context(config.name):
+        first_iteration = True
         for _ in range(config.max_iterations):
             response = llm_with_tools.invoke(messages, config={"run_name": config.name})
             messages.append(response)
@@ -119,7 +120,18 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
             has_tool_calls = (hasattr(response, "tool_calls") and response.tool_calls)
 
             if not has_tool_calls:
+                # 第一轮有工具可用但未调用：注入提醒并重试，防止 LLM 虚构结果
+                if first_iteration and langchain_tools:
+                    from langchain_core.messages import HumanMessage as HM
+                    messages.append(HM(
+                        content="你刚才没有调用任何工具。请立即调用相应的工具完成实际操作，"
+                                "不要仅凭文字描述声称已完成任务。"
+                    ))
+                    first_iteration = False
+                    continue
                 return response.content if hasattr(response, 'content') else str(response)
+
+            first_iteration = False
 
             for tool_call in response.tool_calls:
                 tool_name = tool_call.get("name", "")

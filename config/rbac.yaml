@@ -39,6 +39,18 @@ policies:
     description: "允许agent遍历所有目录"
 
   - subject: "*"
+    action: "generate_pptx"
+    resource: "*"
+    effect: allow
+    description: "允许agent遍历所有目录"
+
+  - subject: "*"
+    action: "file_exists"
+    resource: "*"
+    effect: allow
+    description: "允许agent遍历所有目录"
+
+  - subject: "*"
     action: "read_file"
     resource: "*"
     effect: allow
@@ -61,6 +73,12 @@ policies:
     resource: "file:/etc/**"
     effect: deny
     description: "禁止通过 write_file 写入 /etc 系统配置目录"
+
+  - subject: "*"
+    action: "write_file"
+    resource: "*"
+    effect: allow
+    description: "允许agent写入文件（除已明确禁止的路径外）"
 
   - subject: "*"
     action: "delete_file"

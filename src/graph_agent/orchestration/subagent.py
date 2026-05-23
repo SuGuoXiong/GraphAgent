@@ -66,7 +66,37 @@ class SubAgentRegistry:
         return self._agents[name]
 
     def find_by_skill(self, skill: str) -> list[SubAgentConfig]:
-        return [agent for agent in self._agents.values() if skill in agent.skills]
+        """多级匹配：精确匹配 → 名称包含 → 描述包含。"""
+        if not skill:
+            return []
+        skill_lower = skill.lower().replace("_", "-").replace(" ", "-")
+
+        # Level 1: 精确名称匹配（忽略大小写、下划线/连字符归一化）
+        for agent in self._agents.values():
+            for s in agent.skills:
+                if skill_lower == s.lower().replace("_", "-").replace(" ", "-"):
+                    return [agent]
+
+        # Level 2: 技能名称包含查询词（查询词至少3字符）
+        if len(skill_lower) >= 3:
+            matches = []
+            for agent in self._agents.values():
+                for s in agent.skills:
+                    s_norm = s.lower().replace("_", "-").replace(" ", "-")
+                    if skill_lower in s_norm or s_norm in skill_lower:
+                        matches.append(agent)
+                        break
+            if matches:
+                return matches
+
+        # Level 3: 描述文本包含查询词
+        for agent in self._agents.values():
+            desc_lower = agent.description.lower()
+            if skill_lower in desc_lower or any(
+                word in desc_lower for word in skill_lower.split("-") if len(word) >= 2
+            ):
+                matches.append(agent)
+        return matches
 
     def list_all(self) -> list[SubAgentConfig]:
         return list(self._agents.values())
@@ -130,7 +160,11 @@ def build_skill_system_prompt(skill_def: SkillDef, task_description: str) -> str
 ## 当前任务
 {task_description}
 
-请按照执行指南中的步骤完成任务。如果遇到指南未覆盖的情况，根据你的专业知识灵活处理，但不要超出能力说明中定义的范围。
+## 关键规则
+1. 你必须使用工具来完成当前任务，绝不能仅凭文字描述声称已完成工作。
+2. 严格遵循执行指南中的步骤，一步一步地调用工具。
+3. 如果你发现自己只是在"描述"结果而没有实际调用过生成/写入类工具，停下来，调用相应的工具完成实际操作。
+4. 任务完成的标志是你调用的工具返回了成功结果，而不是你自己生成了看起来像结果的文本。
 """
 
 

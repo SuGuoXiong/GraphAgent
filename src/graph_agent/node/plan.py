@@ -228,14 +228,15 @@ def _dispatch_tasks(state: OrchestrationState) -> dict:
                     task.description = f"{task.description}\n\n【执行参数】\n{params_block}"
 
                 candidates = _registry.find_by_skill(task.required_skill)
-                # 精确匹配失败时回退到 general_agent
+                # 精确匹配失败时回退到通用文字处理
                 if not candidates and task.required_skill:
-                    candidates = _registry.find_by_skill("text_generation")
+                    candidates = _registry.find_by_skill("text-generation")
                     if not candidates:
-                        try:
-                            candidates = [_registry.get("general_agent")]
-                        except KeyError:
-                            pass
+                        candidates = _registry.find_by_skill("general")
+                    if not candidates:
+                        all_agents = _registry.list_all()
+                        if all_agents:
+                            candidates = [all_agents[0]]
                     if candidates:
                         get_tracer().trace_decision(
                             "PlanAgent",
