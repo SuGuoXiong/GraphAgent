@@ -15,6 +15,7 @@
 | **会话管理** | 多轮对话历史、JSON 持久化、两级压缩（优先级裁剪 + LLM 摘要） |
 | **ACP 协议** | JSON 信封协议的 Agent 通信层，支持 HTTP+SSE 和 stdio 两种传输 |
 | **Web UI** | 独立单页应用，支持会话管理、实时 SSE 事件流、ask_user 交互卡片 |
+| **安全体系** | RBAC 鉴权（Subject-Action-Resource-Effect）+ 审计日志（两段式记录），通过 Hook 机制透明集成 |
 | **多 LLM** | 可插拔 Provider：OpenAI（兼容 DeepSeek 等）、Anthropic Claude、Ollama |
 
 ## 项目结构
@@ -29,6 +30,7 @@ GraphAgent/
 │   ├── message/               #   统一消息格式（MessageBlock ↔ LangChain 双向转换）
 │   ├── node/                  #   LangGraph 节点（guard / plan / subagent）
 │   ├── orchestration/         #   三层编排引擎
+│   ├── security/              #   安全模块（RBAC 鉴权 + 审计日志）
 │   ├── session/               #   会话管理（历史/持久化/压缩/Token 估算）
 │   ├── skill/                 #   Skill 系统（解析/加载/注册）
 │   ├── tools/                 #   内置工具（文件/计算/命令/网页/JSON/时间/ask_user）
@@ -37,9 +39,9 @@ GraphAgent/
 │   ├── guard/                 #   GuardAgent 提示词
 │   ├── plan/                  #   PlanAgent 提示词
 │   └── skills/                #   内置 Skill .md 文件
-├── config/                    # YAML 配置文件（ACP / Session）
+├── config/                    # YAML 配置文件（ACP / Session / RBAC / Audit）
 ├── web_ui/                    # Web 控制台（单页应用）
-├── docs/                      # 设计文档（12 篇）
+├── docs/                      # 设计文档（13 篇）
 ├── tests/                     # 单元测试和集成测试
 ├── mcp_servers.json           # MCP Server 配置
 └── skills/                    # 用户自定义 Skill（可选）
@@ -82,18 +84,44 @@ make dev
 ```json
 {
   "mcpServers": {
-    "my-server": {
+    "github": {
       "transport": "stdio",
-      "command": "python",
-      "args": ["-m", "my_mcp_server"]
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "risk_overrides": {
+        "list_issues": "low",
+        "search_code": "low",
+        "create_pr": "medium"
+      }
     }
   }
 }
 ```
 
-GraphAgent 启动时会自动连接并注册 MCP 工具。
+GraphAgent 启动时会自动连接并注册 MCP 工具。MCP 工具默认以高风险（Docker 沙箱）执行，可在 `risk_overrides` 中按需降低等级（`low`→直接执行，`medium`→进程隔离，`high`→沙箱执行）。
 
-### 4. 添加自定义 Skill（可选）
+### 4. 安全配置（可选）
+
+编辑 `config/rbac.yaml` 配置 RBAC 策略：
+
+```yaml
+policies:
+  - subject: "subagent:code_reviewer"
+    action: "read_*"
+    resource: "*"
+    effect: allow                          # allow（放行）/ deny（拒绝）
+    description: "代码审查 Agent 的读取类工具自动放行"
+
+  - subject: "*"
+    action: "run_command"
+    resource: "cmd:rm*"
+    effect: deny                           # 禁止危险命令
+    description: "禁止执行 rm 系列命令"
+```
+
+策略按列表顺序匹配，首次命中即生效。未匹配任何策略的工具调用会触发用户授权（AskUser）。审计日志自动记录所有调用，输出到 `data/audit/`。
+
+### 5. 添加自定义 Skill（可选）
 
 在项目根目录创建 `skills/` 目录，按子文件夹组织：
 
@@ -141,3 +169,4 @@ make integration-tests    # 集成测试（需 ANTHROPIC_API_KEY）
 | 10 | 人机协作功能设计 |
 | 11 | Skill 系统设计 |
 | 12 | MCP 协议支持设计 |
+| 13 | 安全体系设计 |
