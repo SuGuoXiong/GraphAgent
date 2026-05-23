@@ -98,12 +98,17 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
     ))
     llm_with_tools = llm.bind_tools(langchain_tools) if langchain_tools else llm
 
-    messages = [SystemMessage(content=system_prompt),
-                HumanMessage(content=sanitize_text(f"请完成以下任务:\n{task_description}"))]
+    subagent_msgs = state.get("_subagent_messages")
+    if subagent_msgs:
+        messages = list(subagent_msgs)
+        state["_subagent_messages"] = None
+    else:
+        messages = [SystemMessage(content=system_prompt),
+                    HumanMessage(content=sanitize_text(f"请完成以下任务:\n{task_description}"))]
 
-    injected = state.get("_injected_messages")
-    if injected:
-        messages.extend(injected)
+        injected = state.get("_injected_messages")
+        if injected:
+            messages.extend(injected)
         state["_injected_messages"] = None
 
     with agent_execution_context(config.name):
@@ -127,7 +132,7 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
                         result_text = tool.run(**tool_args)
                     except AskUserException as e:
                         e.state = {
-                            "llm_response": messages[-1] if messages else None,
+                            "messages": list(messages),
                             "ask_user_tool_id": tool_id,
                         }
                         raise
@@ -174,8 +179,8 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
             result = _run_subagent(config, task.description, task.task_id, state)
         except AskUserException as e:
             full_state = dict(state)
-            if e.state and e.state.get("llm_response"):
-                full_state["_ask_user_llm_response"] = e.state["llm_response"]
+            if e.state and e.state.get("messages"):
+                full_state["_subagent_messages"] = e.state["messages"]
             if e.state and e.state.get("ask_user_tool_id"):
                 full_state["_ask_user_tool_id"] = e.state["ask_user_tool_id"]
             full_state["task_plan"] = task_plan

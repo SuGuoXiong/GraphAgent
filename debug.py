@@ -3,7 +3,7 @@
 用法:
     py debug.py                    # 默认：三层编排图（直接模式），日志级别 llm_io
     py debug.py --simple           # 简单图（快速模式）
-    py debug.py --acp              # 启动 ACP HTTP+SSE 服务（默认端口 8080）
+    py debug.py --acp              # 启动 ACP + Web UI 服务（默认端口 8080/8020）
     py debug.py --acp --port 9090  # 启动 ACP 服务并指定端口
     py debug.py --log-level full   # 最详细日志，包含工具调用
     py debug.py --log-level phases # 仅显示阶段切换
@@ -12,6 +12,10 @@
 import asyncio
 import sys
 import argparse
+import threading
+import http.server
+import socketserver
+from pathlib import Path
 
 sys.path.insert(0, 'src')
 
@@ -181,8 +185,24 @@ async def run_orchestration():
             print()
 
 
+def _start_web_ui(web_ui_dir: str, host: str = "127.0.0.1", port: int = 8020):
+    """在后台线程中启动 Web UI 静态文件服务。"""
+    import os
+
+    class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, format, *args):
+            pass  # 抑制 HTTP 请求日志
+
+    os.chdir(web_ui_dir)
+    try:
+        with socketserver.TCPServer((host, port), _QuietHandler) as httpd:
+            httpd.serve_forever()
+    finally:
+        os.chdir(Path(__file__).parent)
+
+
 async def run_acp_server(port: int = 8080):
-    """启动 ACP HTTP+SSE 服务。"""
+    """启动 ACP HTTP+SSE 服务，并附带 Web UI 静态文件服务。"""
     print("正在初始化 GraphAgent ACP 服务...", flush=True)
     print("正在初始化 GraphAgent ACP 服务...", file=sys.stderr)
 
@@ -220,17 +240,24 @@ async def run_acp_server(port: int = 8080):
         traceback.print_exc()
         return
 
+    # 启动 Web UI 后台服务
+    web_ui_port = 8020
+    web_ui_dir = Path(__file__).parent / "web_ui"
+    web_ui_thread = threading.Thread(
+        target=_start_web_ui,
+        args=(str(web_ui_dir), config.host, web_ui_port),
+        daemon=True,
+    )
+    web_ui_thread.start()
+
     print(f"\n=== GraphAgent ACP Server ===")
-    print(f"监听地址: http://{config.host}:{config.port}")
-    print(f"POST /acp/message  — 发送请求")
-    print(f"GET  /acp/events   — SSE 事件流")
-    print(f"GET  /health       — 健康检查")
-    print(f"会话存储: {server.session_manager.storage_dir}")
-    print(f"最大并发会话: {config.max_sessions}")
-    print(f"按 Ctrl+C 停止服务")
-    print(f"\n启动 Web UI（新终端）：")
-    print(f"  cd web_ui && py -m http.server 8020 --bind 127.0.0.1")
-    print(f"  然后浏览器打开: http://127.0.0.1:8020\n")
+    print(f"后端 API:      http://{config.host}:{config.port}/acp/message")
+    print(f"SSE 事件流:    http://{config.host}:{config.port}/acp/events")
+    print(f"Web UI 控制台: http://{config.host}:{web_ui_port}")
+    print(f"健康检查:       http://{config.host}:{config.port}/health")
+    print(f"会话存储:       {server.session_manager.storage_dir}")
+    print(f"最大并发会话:   {config.max_sessions}")
+    print(f"按 Ctrl+C 停止服务\n")
 
     transport = HTTPSSETransport(server, config)
     try:

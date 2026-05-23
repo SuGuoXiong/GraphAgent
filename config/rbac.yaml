@@ -32,6 +32,29 @@ policies:
     description: "禁止任意 agent 通过任意工具访问 .env 等敏感配置文件"
 
   # ─── 文件操作策略 ───
+  - subject: "*"
+    action: "list_directory"
+    resource: "*"
+    effect: allow
+    description: "允许agent遍历所有目录"
+
+  - subject: "*"
+    action: "read_file"
+    resource: "*"
+    effect: allow
+    description: "允许agent读取所有文件"
+
+  - subject: "*"
+    action: "search_files"
+    resource: "*"
+    effect: allow
+    description: "允许agent读取所有文件"
+
+  - subject: "*"
+    action: "search_content"
+    resource: "*"
+    effect: allow
+    description: "允许agent读取所有文件"
 
   - subject: "*"
     action: "write_file"

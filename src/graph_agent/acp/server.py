@@ -39,6 +39,16 @@ from graph_agent.orchestration.graph import build_orchestration_graph
 from graph_agent.tracer.tracer import get_tracer, OrchestrationTracer
 
 
+def _append_tool_result(messages: list, tool_call_id: str, result: str) -> None:
+    """向消息列表中追加一条 ToolMessage。"""
+    from langchain_core.messages import ToolMessage
+    messages.append(ToolMessage(
+        content=result,
+        tool_call_id=tool_call_id,
+        name="ask_user",
+    ))
+
+
 def _build_user_reply(ask_ctx: dict, reply: str, selected_option: int | None) -> str:
     """根据问题上下文和用户回答构建回复文本。"""
     if selected_option is not None and ask_ctx.get("options"):
@@ -381,21 +391,27 @@ class ACPServer:
             ctx.status = SessionStatus.RESUMING.value
             initial_state = deserialize_checkpoint(ctx.checkpoint)
 
-            # 如果是从 ask_user 中断恢复，注入用户回答
+            # 如果是从 ask_user 中断恢复，将用户回答注入 SubAgent 消息流
             if ctx.checkpoint.get("reason") == "ask_user" and "user_reply" in ctx.checkpoint:
                 user_reply = ctx.checkpoint.pop("user_reply")
                 ask_ctx = ctx.checkpoint.get("ask_user_context", {})
-                ask_llm = initial_state.pop("_ask_user_llm_response", None)
-                if ask_llm is not None:
-                    initial_state["messages"].append(ask_llm)
-                initial_state = _inject_user_reply(
-                    initial_state, user_reply,
-                    tool_call_id=ask_ctx.get("tool_call_id", ""),
-                )
-                # 将最后两条消息（AIMessage + ToolMessage）注入到 SubAgent 的 ReAct 循环中
-                initial_state["_injected_messages"] = list(
-                    initial_state.get("messages", [])[-2:]
-                )
+                tool_call_id = ask_ctx.get("tool_call_id", "")
+
+                subagent_msgs = initial_state.get("_subagent_messages", [])
+                if subagent_msgs and tool_call_id:
+                    _append_tool_result(subagent_msgs, tool_call_id, user_reply)
+                else:
+                    # 兼容旧检查点（使用 _ask_user_llm_response）
+                    ask_llm = initial_state.pop("_ask_user_llm_response", None)
+                    if ask_llm is not None:
+                        initial_state["messages"].append(ask_llm)
+                    initial_state = _inject_user_reply(
+                        initial_state, user_reply,
+                        tool_call_id=tool_call_id,
+                    )
+                    initial_state["_injected_messages"] = list(
+                        initial_state.get("messages", [])[-2:]
+                    )
 
             events.append(ACPMessage.event(PushEvent.PHASE_CHANGED, {
                 "phase": "resume",

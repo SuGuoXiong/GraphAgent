@@ -118,7 +118,7 @@ def serialize_checkpoint(state: dict, session_id: str, reason: str) -> dict:
         except Exception:
             serialized_ga.append(str(m))
 
-    # ── _ask_user_llm_response 序列化 ─────────────────
+    # ── _ask_user_llm_response 序列化（兼容旧检查点）─
     ask_user_llm_resp = state.get("_ask_user_llm_response")
     serialized_ask_user_llm = None
     if ask_user_llm_resp is not None:
@@ -126,6 +126,15 @@ def serialize_checkpoint(state: dict, session_id: str, reason: str) -> dict:
             serialized_ask_user_llm = message_to_dict(ask_user_llm_resp)
         except Exception:
             serialized_ask_user_llm = None
+
+    # ── _subagent_messages 序列化 ─────────────────────
+    subagent_msgs = state.get("_subagent_messages", [])
+    serialized_subagent_msgs = []
+    for m in subagent_msgs:
+        try:
+            serialized_subagent_msgs.append(message_to_dict(m))
+        except Exception:
+            pass
 
     # ── _ask_user_tool_id 序列化 ──────────────────────
     ask_user_tool_id = state.get("_ask_user_tool_id", "")
@@ -150,6 +159,7 @@ def serialize_checkpoint(state: dict, session_id: str, reason: str) -> dict:
         "ga_messages": serialized_ga,
         "_ask_user_llm_response": serialized_ask_user_llm,
         "_ask_user_tool_id": ask_user_tool_id,
+        "_subagent_messages": serialized_subagent_msgs,
         "session_id": session_id,
         "created_at": _iso_now(),
         "reason": reason,
@@ -220,7 +230,7 @@ def deserialize_checkpoint(checkpoint: dict) -> dict:
             except Exception:
                 pass
 
-    # ── _ask_user_llm_response 恢复 ───────────────────
+    # ── _ask_user_llm_response 恢复（兼容旧检查点）───
     ask_user_llm_raw = checkpoint.get("_ask_user_llm_response")
     ask_user_llm_resp = None
     if ask_user_llm_raw:
@@ -229,6 +239,14 @@ def deserialize_checkpoint(checkpoint: dict) -> dict:
             ask_user_llm_resp = msgs[0] if msgs else None
         except Exception:
             ask_user_llm_resp = None
+
+    # ── _subagent_messages 恢复 ───────────────────────
+    subagent_msgs = []
+    for raw in checkpoint.get("_subagent_messages", []):
+        try:
+            subagent_msgs.extend(messages_from_dict([raw]))
+        except Exception:
+            pass
 
     return {
         "phase": phase,
@@ -243,6 +261,7 @@ def deserialize_checkpoint(checkpoint: dict) -> dict:
         "ga_messages": ga_msgs,
         "_ask_user_llm_response": ask_user_llm_resp,
         "_ask_user_tool_id": checkpoint.get("_ask_user_tool_id", ""),
+        "_subagent_messages": subagent_msgs,
     }
 
 
