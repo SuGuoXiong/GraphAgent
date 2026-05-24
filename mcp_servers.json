@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "github": {
+      "transport": "stdio",
+      "command": "python",
+      "args": ["mcp_servers/github_server.py"],
+      "cwd": ".",
+      "risk_overrides": {
+        "fetch_github_trending": "low",
+        "fetch_repo_readme": "low"
+      }
+    }
+  }
+}
