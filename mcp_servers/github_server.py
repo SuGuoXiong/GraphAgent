@@ -78,6 +78,7 @@ def fetch_github_trending(
     output_dir: str = "./data/github",
     since: str = "daily",
     language: str = "",
+    limit: int = 0,
 ) -> str:
     """抓取 GitHub Trending 数据并保存为 Markdown 文件。"""
     # 1. 参数校验
@@ -110,6 +111,10 @@ def fetch_github_trending(
         # 备选方案：返回页面文本摘要供排查
         text = soup.get_text(strip=True)[:2000]
         return f"警告: 未能从页面中解析到仓库列表，GitHub 页面结构可能已更新。\n页面文本摘要:\n{text}"
+
+    # 截取前 N 个项目（limit=0 或负数时不限制）
+    if limit > 0:
+        repos = repos[:limit]
 
     # 5. 生成 Markdown
     cst = datetime.now(timezone(timedelta(hours=8)))

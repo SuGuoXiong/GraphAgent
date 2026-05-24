@@ -91,27 +91,48 @@ class AgentTool:
         return self.func(**tool_args)
 
     def _run_isolated(self, tool_args: dict) -> str:
-        """在独立子进程中执行（中风险工具）。"""
-        import multiprocessing
-        import json
+        """在独立子进程中执行（中风险工具）。
 
-        result_queue = multiprocessing.Queue()
-        args_json = json.dumps(tool_args)
-        p = multiprocessing.Process(
-            target=_isolated_worker, args=(self.func, args_json, result_queue)
-        )
-        p.start()
-        p.join(timeout=30)
-        if p.is_alive():
-            p.terminate()
-            p.join()
+        使用 subprocess 而非 multiprocessing，避免 Windows spawn 模式
+        下模块重导入引发的句柄冲突（OSError: WinError 6）。
+        """
+        import subprocess
+        import json
+        import os
+
+        # 闭包/lambda 等不可导入函数降级为直接执行
+        func_module = getattr(self.func, "__module__", None)
+        func_qualname = getattr(self.func, "__qualname__", None)
+        if not func_module or not func_qualname or func_module == "__main__":
+            return self._run_direct(tool_args)
+
+        input_data = json.dumps({
+            "module": func_module,
+            "qualname": func_qualname,
+            "args_json": json.dumps(tool_args),
+        })
+
+        env = os.environ.copy()
+        pythonpath = os.pathsep.join(sys.path)
+        if "PYTHONPATH" in env:
+            env["PYTHONPATH"] = pythonpath + os.pathsep + env["PYTHONPATH"]
+        else:
+            env["PYTHONPATH"] = pythonpath
+
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", _ISOLATED_WORKER_SCRIPT],
+                input=input_data,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            return f"Error: {result.stderr.strip()}"
+        except subprocess.TimeoutExpired:
             return "Error: 工具执行超时（30s）"
-        if not result_queue.empty():
-            status, result = result_queue.get()
-            if status == "ok":
-                return result
-            return f"Error: {result}"
-        return "Error: 工具执行异常"
 
     def _run_in_sandbox(self, tool_args: dict) -> str:
         """在 Docker 沙箱中执行（高风险工具）。
@@ -249,16 +270,27 @@ def tool(name: str, description: str, risk_level: str = "medium"):
     return decorator
 
 
-def _isolated_worker(func, args_json, result_queue):
-    """模块级函数，在子进程中执行工具调用。
+_ISOLATED_WORKER_SCRIPT = """\
+import sys, json, importlib
 
-    必须是模块级函数（非闭包/内嵌函数），因为 multiprocessing
-    使用 pickle 序列化，闭包和实例方法无法被 pickle。
-    """
-    import json
-    try:
-        args = json.loads(args_json)
-        result = func(**args)
-        result_queue.put(("ok", result))
-    except Exception as e:
-        result_queue.put(("error", str(e)))
+input_data = json.loads(sys.stdin.read())
+module_name = input_data["module"]
+qualname = input_data["qualname"]
+args = json.loads(input_data["args_json"])
+
+module = importlib.import_module(module_name)
+func = module
+for part in qualname.split("."):
+    func = getattr(func, part)
+
+# @tool 装饰器返回 AgentTool 实例，需解包为原始可调用函数
+if hasattr(func, "func") and hasattr(func, "run"):
+    func = func.func
+
+try:
+    result = func(**args)
+    print(result)
+except Exception as e:
+    print(f"Error: {e}", file=sys.stderr)
+    sys.exit(1)
+"""
