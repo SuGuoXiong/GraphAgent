@@ -79,7 +79,7 @@ subagents:
       - command_execution
       - web_fetch
       - json_processing
-      - text_generation
+      - general_purpose
     tools:
       - read_file
       - write_file

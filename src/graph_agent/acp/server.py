@@ -413,6 +413,12 @@ class ACPServer:
                         initial_state.get("messages", [])[-2:]
                     )
 
+                # 更新 RBAC 升级令牌的审批状态，恢复执行时自动放行已授权工具
+                rbac_token = initial_state.get("_rbac_pending_escalation")
+                if rbac_token:
+                    rbac_token["approved"] = "批准" in user_reply
+                    rbac_token["denied"] = "拒绝" in user_reply
+
             events.append(ACPMessage.event(PushEvent.PHASE_CHANGED, {
                 "phase": "resume",
                 "detail": f"从检查点恢复，阶段: {initial_state.get('phase', '')}",

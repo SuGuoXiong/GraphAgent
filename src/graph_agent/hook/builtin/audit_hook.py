@@ -30,7 +30,10 @@ def audit_prerecord(ctx: HookContext):
 
     tool_center = ToolCenter()
     tool_center.auto_discover()
-    tool = tool_center.get_tool(tool_name) if tool_name else None
+    try:
+        tool = tool_center.get_tool(tool_name) if tool_name else None
+    except KeyError:
+        tool = None
 
     record = AuditRecord(
         timestamp=datetime.now(timezone.utc).isoformat(),

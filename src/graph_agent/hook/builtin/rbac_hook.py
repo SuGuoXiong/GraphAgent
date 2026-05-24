@@ -8,6 +8,9 @@ import time
 from graph_agent.hook.base import hook, HookContext, HookDecision, HookAction, HookType
 from graph_agent.acp.checkpoint import AskUserException
 
+# 恢复执行时预授权的工具名集合，由 _run_subagent 在恢复后注入
+_approved_tools: set = set()
+
 
 @hook(
     checkpoint="before_tool_call",
@@ -28,9 +31,10 @@ def rbac_check(ctx: HookContext) -> HookDecision:
 
     tool_center = ToolCenter()
     tool_center.auto_discover()
-    tool = tool_center.get_tool(tool_name) if tool_name else None
-    if not tool:
-        return HookDecision(action=HookAction.CONTINUE)
+    try:
+        tool = tool_center.get_tool(tool_name) if tool_name else None
+    except KeyError:
+        tool = None
 
     action = tool_name
     resource = extract_resource(tool_name, tool_args)
@@ -70,6 +74,15 @@ def rbac_check(ctx: HookContext) -> HookDecision:
         )
 
     if decision == "need_escalation":
+        # 低风险工具自动放行，无需用户授权
+        if tool and tool.risk_level == "low":
+            return HookDecision(action=HookAction.CONTINUE)
+
+        # 恢复执行时，已通过用户授权的工具自动放行
+        if tool_name in _approved_tools:
+            _approved_tools.discard(tool_name)
+            return HookDecision(action=HookAction.CONTINUE)
+
         _create_escalation_token(ctx, subject, tool_name, resource)
         raise AskUserException(
             question=f"Agent '{subject}' 请求执行操作:\n"

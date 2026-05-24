@@ -5,11 +5,11 @@
 policies:
   # ─── MCP 工具策略 ───
 
-  - subject: "subagent:data_engineer"
-    action: "mcp__production_db__*"
+  - subject: "*"
+    action: "mcp__github_*"
     resource: "*"
     effect: allow
-    description: "数据工程师可完全操作生产数据库 MCP 工具"
+    description: "Github MCP 工具都为只读操作，因此不做权限管控"
 
   - subject: "*"
     action: "mcp__production_db__*"
@@ -85,6 +85,64 @@ policies:
     resource: "file:/*"
     effect: deny
     description: "禁止在根目录执行文件删除操作"
+
+  # ─── 计算与时间工具（低风险，只读）───
+
+  - subject: "*"
+    action: "safe_calculator"
+    resource: "*"
+    effect: allow
+    description: "数学计算工具，纯函数无副作用"
+
+  - subject: "*"
+    action: "get_utc_time"
+    resource: "*"
+    effect: allow
+    description: "UTC时间查询，纯函数无副作用"
+
+  # ─── JSON 工具 ───
+
+  - subject: "*"
+    action: "json_load"
+    resource: "*"
+    effect: allow
+    description: "JSON解析，纯数据转换无副作用"
+
+  - subject: "*"
+    action: "json_dump"
+    resource: "*"
+    effect: allow
+    description: "JSON序列化，纯数据转换无副作用"
+
+  # ─── 网页工具 ───
+
+  - subject: "*"
+    action: "search_web"
+    resource: "*"
+    effect: allow
+    description: "网页搜索，只读操作"
+
+  - subject: "*"
+    action: "fetch_web"
+    resource: "*"
+    effect: allow
+    description: "网页抓取，只读操作"
+
+  # ─── 文件追加工具 ───
+
+  - subject: "*"
+    action: "append_file"
+    resource: "*"
+    effect: allow
+    description: "文件追加，低风险写操作"
+
+  # ─── 用户交互工具 ───
+
+  - subject: "*"
+    action: "ask_user"
+    resource: "*"
+    effect: allow
+    description: "Agent向用户提问，标准交互流程"
 
   # ─── 命令执行策略 ───
 

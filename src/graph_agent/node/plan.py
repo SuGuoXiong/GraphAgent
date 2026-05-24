@@ -230,7 +230,7 @@ def _dispatch_tasks(state: OrchestrationState) -> dict:
                 candidates = _registry.find_by_skill(task.required_skill)
                 # 精确匹配失败时回退到通用文字处理
                 if not candidates and task.required_skill:
-                    candidates = _registry.find_by_skill("text-generation")
+                    candidates = _registry.find_by_skill("general-purpose")
                     if not candidates:
                         candidates = _registry.find_by_skill("general")
                     if not candidates:

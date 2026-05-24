@@ -1,7 +1,7 @@
 ---
-name: text-generation
+name: general-purpose
 type: builtin
-description: 通用任务执行与文本生成，能处理各类常规任务，包括文本生成、对话、问答、文件操作、计算、时间查询、命令执行、网页抓取、JSON处理等
+description: 通用任务执行与文本生成，处理需要工具操作的复杂任务，包括文本生成与分析、文件操作、计算、时间查询、命令执行、网页抓取、JSON处理及多工具组合任务。如果是简单对话/问候/闲聊，请使用 chat 技能
 tools:
   - name: read_file
     description: 读取指定路径的文件内容

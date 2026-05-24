@@ -2,13 +2,22 @@
 
 import os
 import shutil
+import sys
 from pathlib import Path
 
 from graph_agent.tools.base import tool
 
+# Windows 上无意义的 Linux 虚拟/系统路径前缀，LLM 容易在跨平台场景下幻觉这些路径
+_LINUX_ONLY_PREFIXES = ("/proc/", "/sys/", "/dev/")
+
 
 def _resolve_path(path: str) -> Path:
-    """解析并规范化路径，拒绝路径遍历攻击。"""
+    """解析并规范化路径，拒绝路径遍历攻击和跨平台无效路径。"""
+    if sys.platform == "win32" and path.startswith(_LINUX_ONLY_PREFIXES):
+        raise ValueError(
+            f"路径 '{path}' 是 Linux 系统路径，当前运行环境为 Windows，"
+            f"该路径不可用。请使用实际的文件系统路径（如 ./data/ 等）。"
+        )
     resolved = Path(path).resolve()
     if ".." in resolved.parts:
         raise ValueError("路径包含非法的上级目录引用")

@@ -62,6 +62,46 @@ def agent_execution_context(agent_name: str):
             delattr(_agent_context, 'name')
 
 
+def _strip_dangling_tool_calls(messages: list) -> None:
+    """清理消息流末尾未完成的 tool_calls，防止 LLM API 400 错误。
+
+    当 SubAgent 执行被中断恢复时，_subagent_messages 末尾可能残留
+    一个带 tool_calls 的 AIMessage，但缺少对应的 ToolMessage 响应。
+    此函数检测并移除这些悬挂的 tool_calls 消息。
+    """
+    if not messages:
+        return
+    from langchain_core.messages import AIMessage
+    last = messages[-1]
+    if isinstance(last, AIMessage) and hasattr(last, "tool_calls") and last.tool_calls:
+        # 检查每个 tool_call 是否有对应的 ToolMessage
+        seen_ids = set()
+        for m in messages:
+            if hasattr(m, "tool_call_id") and m.tool_call_id:
+                seen_ids.add(m.tool_call_id)
+        for tc in last.tool_calls:
+            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", "")
+            if tc_id and tc_id not in seen_ids:
+                # 存在未响应的 tool_call，移除该 AIMessage 让 LLM 重试
+                messages.pop()
+                return
+
+
+def _inject_approved_tools(state: OrchestrationState) -> None:
+    """将恢复执行时已通过用户授权的工具注入 RBAC 白名单。
+
+    从 state 中读取 _rbac_pending_escalation 令牌，
+    若令牌中的 approved 字段为 True，将对应工具名加入 _approved_tools。
+    """
+    token = state.get("_rbac_pending_escalation")
+    if not token:
+        return
+    state["_rbac_pending_escalation"] = None
+    if token.get("approved") and token.get("tool_name"):
+        from graph_agent.hook.builtin.rbac_hook import _approved_tools
+        _approved_tools.add(token["tool_name"])
+
+
 def _run_subagent(config: SubAgentConfig, task_description: str,
                   task_id: str, state: OrchestrationState) -> str:
     """在 ReAct 循环中运行单个 SubAgent，返回执行结果。
@@ -102,6 +142,9 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
     if subagent_msgs:
         messages = list(subagent_msgs)
         state["_subagent_messages"] = None
+        # 清理恢复消息流末尾可能残留的未完成 tool_calls，
+        # 避免 LLM API 报 400 错误（insufficient tool messages）
+        _strip_dangling_tool_calls(messages)
     else:
         messages = [SystemMessage(content=system_prompt),
                     HumanMessage(content=sanitize_text(f"请完成以下任务:\n{task_description}"))]
@@ -110,6 +153,9 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
         if injected:
             messages.extend(injected)
         state["_injected_messages"] = None
+
+    # 恢复执行时注入已通过 RBAC 升级授权的工具
+    _inject_approved_tools(state)
 
     with agent_execution_context(config.name):
         first_iteration = True
@@ -120,15 +166,30 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
             has_tool_calls = (hasattr(response, "tool_calls") and response.tool_calls)
 
             if not has_tool_calls:
-                # 第一轮有工具可用但未调用：注入提醒并重试，防止 LLM 虚构结果
+                # 首轮有工具可用但未调用：仅当任务明确需要产出物时才注入提醒
                 if first_iteration and langchain_tools:
-                    from langchain_core.messages import HumanMessage as HM
-                    messages.append(HM(
-                        content="你刚才没有调用任何工具。请立即调用相应的工具完成实际操作，"
-                                "不要仅凭文字描述声称已完成任务。"
-                    ))
-                    first_iteration = False
-                    continue
+                    _output_keywords = (
+                        "文件", "写入", "生成", "保存", "创建", "执行", "命令", "运行",
+                        "pptx", "markdown", "json", "csv", "转换", "下载", "抓取",
+                        "file", "write", "generate", "create", "save", "run",
+                    )
+                    # 纯文本输出任务不应触发强制工具调用
+                    _text_only_markers = (
+                        "文本回复", "文字回答", "聊天对话", "介绍", "列出",
+                        "问候", "闲聊", "回答", "解释说明",
+                    )
+                    _needs_tool = (
+                        any(kw in task_description for kw in _output_keywords)
+                        and not any(m in task_description for m in _text_only_markers)
+                    )
+                    if _needs_tool:
+                        from langchain_core.messages import HumanMessage as HM
+                        messages.append(HM(
+                            content="你刚才没有调用任何工具。请立即调用相应的工具完成实际操作，"
+                                    "不要仅凭文字描述声称已完成任务。"
+                        ))
+                        first_iteration = False
+                        continue
                 return response.content if hasattr(response, 'content') else str(response)
 
             first_iteration = False
@@ -143,10 +204,10 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
                     try:
                         result_text = tool.run(**tool_args)
                     except AskUserException as e:
-                        e.state = {
-                            "messages": list(messages),
-                            "ask_user_tool_id": tool_id,
-                        }
+                        merged = dict(e.state) if e.state else {}
+                        merged["messages"] = list(messages)
+                        merged["ask_user_tool_id"] = tool_id
+                        e.state = merged
                         raise
                     except Exception as e:
                         result_text = f"工具执行错误: {e}"
@@ -195,6 +256,10 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
                 full_state["_subagent_messages"] = e.state["messages"]
             if e.state and e.state.get("ask_user_tool_id"):
                 full_state["_ask_user_tool_id"] = e.state["ask_user_tool_id"]
+            # 保留 RBAC 升级令牌，恢复执行时可识别已授权工具
+            rbac_token = (e.state or {}).get("_rbac_pending_escalation")
+            if rbac_token:
+                full_state["_rbac_pending_escalation"] = rbac_token
             full_state["task_plan"] = task_plan
             full_state["sub_results"] = sub_results
             raise AskUserException(

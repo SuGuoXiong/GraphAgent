@@ -7,6 +7,7 @@ import json
 
 from graph_agent.orchestration.state import OrchestrationState, OrchestrationPhase
 from graph_agent.orchestration.prompt_loader import PromptLoader
+from graph_agent.orchestration.subagent import SubAgentRegistry
 from graph_agent.message import (
     MessageBlock, ContentBlock,
     create_assistant_message, create_system_message,
@@ -17,6 +18,7 @@ from graph_agent.message.message_type import MessageType
 from graph_agent.tracer import get_tracer
 
 _prompt_loader = PromptLoader()
+_registry = SubAgentRegistry()
 
 
 def _call_llm(system_prompt: str, user_text: str,
@@ -147,6 +149,7 @@ def _review_plan(state: OrchestrationState) -> dict:
         conversation_context=_format_context(state.get("messages", [])),
         task_plan=str(task_plan),
         intent=state.get("intent", ""),
+        available_subagents=_registry.describe_all_for_llm(),
     )
     user_text = f"请审核以下任务计划:\n{task_plan}"
     msg = _call_llm(system_prompt, user_text, state,
