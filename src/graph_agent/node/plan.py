@@ -10,6 +10,7 @@ import uuid
 from graph_agent.orchestration.state import (
     OrchestrationState, OrchestrationPhase, TaskPlan, SubTask,
 )
+from graph_agent.orchestration.dag import validate_and_log
 from graph_agent.orchestration.prompt_loader import PromptLoader
 from graph_agent.orchestration.subagent import SubAgentRegistry
 from graph_agent.message import (
@@ -156,6 +157,13 @@ def _generate_plan(state: OrchestrationState) -> dict:
         expected_output_format=result.get("expected_output_format", ""),
     )
 
+    # DAG 合法性校验：检测循环依赖和缺失依赖
+    if not validate_and_log(sub_tasks):
+        get_tracer().trace_decision(
+            "PlanAgent",
+            "DAG 校验失败：存在循环依赖或缺失依赖，PlanAgent 需要重新生成",
+        )
+
     msg = create_assistant_message(
         content=text,
         name="PlanAgent",
@@ -170,107 +178,90 @@ def _generate_plan(state: OrchestrationState) -> dict:
     }
 
 
-def _resolve_placeholders(text: str, sub_results: dict[str, str]) -> str:
-    """将文本中的 {{task_id}} 和 {{task_id.result}} 占位符替换为实际执行结果。"""
-    text = str(text)
-    if not text or not sub_results:
-        return text
-
-    def _replace(match: re.Match) -> str:
-        key = match.group(1).strip()
-        # {{task_id.result}} → 取 .result 后缀
-        if key.endswith(".result"):
-            task_id = key[:-7]
-        else:
-            task_id = key
-        return sub_results.get(task_id, match.group(0))
-
-    return re.sub(r'\{\{(.+?)\}\}', _replace, text)
-
-
 def _dispatch_tasks(state: OrchestrationState) -> dict:
-    """任务派发阶段：将就绪的子任务派发给匹配的 SubAgent。"""
-    get_tracer().trace_phase("任务派发", "PlanAgent", "将就绪子任务派发给匹配的 SubAgent")
+    """任务派发阶段：一次性将所有 pending 任务派发为 running。
+
+    不再逐批检查依赖是否满足——依赖关系交由 subagent_exec_node 的拓扑分层机制处理。
+    占位符解析也延后到 subagent_exec_node 执行前 JIT 解析。
+    """
+    get_tracer().trace_phase("任务派发", "PlanAgent", "一次性派发所有 pending 子任务")
 
     task_plan = state.get("task_plan")
     if not task_plan:
         return {"phase": OrchestrationPhase.COMPLETED}
 
     sub_tasks = task_plan.sub_tasks
-    sub_results = state.get("sub_results", {})
     dispatch_messages = []
 
     for task in sub_tasks:
-        if task.status == "pending":
-            deps_met = all(
-                sub_results.get(dep_id) is not None
-                for dep_id in task.dependencies
+        if task.status != "pending":
+            continue
+
+        # 检查是否有依赖任务失败 → 级联标记失败
+        failed_deps = [
+            dep_id for dep_id in task.dependencies
+            if any(
+                t.task_id == dep_id and t.status == "failed"
+                for t in sub_tasks
             )
-            if deps_met:
-                # 用已完成的子任务结果填充占位符
-                task.description = _resolve_placeholders(task.description, sub_results)
-                resolved_input_data = {
-                    k: _resolve_placeholders(v, sub_results)
-                    for k, v in task.input_data.items()
-                }
-                task.input_data = resolved_input_data
+        ]
+        if failed_deps:
+            task.status = "failed"
+            task.error = f"前置任务失败: {failed_deps}"
+            continue
 
-                # 将解析后的 input_data 追加到任务描述中，确保 SubAgent 获得完整上下文
-                if resolved_input_data:
-                    param_lines = []
-                    for k, v in resolved_input_data.items():
-                        v_str = str(v)
-                        if "\n" in v_str:
-                            param_lines.append(f"- {k}:\n  \"\"\"\n  {v_str}\n  \"\"\"")
-                        else:
-                            param_lines.append(f"- {k}: {v_str}")
-                    params_block = "\n".join(param_lines)
-                    task.description = f"{task.description}\n\n【执行参数】\n{params_block}"
+        # 匹配 SubAgent（同现有逻辑）
+        candidates = _registry.find_by_skill(task.required_skill)
+        if not candidates and task.required_skill:
+            candidates = _registry.find_by_skill("general-purpose")
+            if not candidates:
+                candidates = _registry.find_by_skill("general")
+            if not candidates:
+                all_agents = _registry.list_all()
+                if all_agents:
+                    candidates = [all_agents[0]]
+            if candidates:
+                get_tracer().trace_decision(
+                    "PlanAgent",
+                    f"技能 '{task.required_skill}' 无精确匹配，回退到 {candidates[0].name}",
+                )
 
-                candidates = _registry.find_by_skill(task.required_skill)
-                # 精确匹配失败时回退到通用文字处理
-                if not candidates and task.required_skill:
-                    candidates = _registry.find_by_skill("general-purpose")
-                    if not candidates:
-                        candidates = _registry.find_by_skill("general")
-                    if not candidates:
-                        all_agents = _registry.list_all()
-                        if all_agents:
-                            candidates = [all_agents[0]]
-                    if candidates:
-                        get_tracer().trace_decision(
-                            "PlanAgent",
-                            f"技能 '{task.required_skill}' 无精确匹配，回退到 {candidates[0].name}",
-                        )
-                if candidates:
-                    task.status = "running"
-                    task.assigned_agent = candidates[0].name
-                    msg = create_assistant_message(
-                        content=task.description,
-                        name="PlanAgent",
-                        message_type=MessageType.PLAN_TASK_DISPATCH,
-                        metadata={
-                            "task_id": task.task_id,
-                            "required_skill": task.required_skill,
-                            "assigned_agent": task.assigned_agent,
-                        },
-                    )
-                    dispatch_messages.append(msg)
-                else:
-                    task.status = "failed"
-                    task.error = f"未找到匹配技能 '{task.required_skill}' 的 SubAgent"
+        if candidates:
+            task.status = "running"
+            task.assigned_agent = candidates[0].name
+            msg = create_assistant_message(
+                content=task.description,
+                name="PlanAgent",
+                message_type=MessageType.PLAN_TASK_DISPATCH,
+                metadata={
+                    "task_id": task.task_id,
+                    "required_skill": task.required_skill,
+                    "assigned_agent": task.assigned_agent,
+                },
+            )
+            dispatch_messages.append(msg)
+        else:
+            task.status = "failed"
+            task.error = f"未找到匹配技能 '{task.required_skill}' 的 SubAgent"
 
-    all_done = all(t.status in ("completed", "failed") for t in sub_tasks)
-    if not dispatch_messages and not all_done:
-        return {}
+    # 注：不再在此处解析占位符，改为 subagent_exec_node 执行前 JIT 解析
 
-    next_phase = OrchestrationPhase.RESULT_SYNTHESIS if all_done else OrchestrationPhase.TASK_EXECUTION
+    # 判断下一阶段
+    all_terminal = all(
+        t.status in ("completed", "failed") for t in sub_tasks
+    )
 
     return {
-        "phase": next_phase,
+        "phase": (
+            OrchestrationPhase.RESULT_SYNTHESIS if all_terminal
+            else OrchestrationPhase.TASK_EXECUTION
+        ),
         "task_plan": task_plan,
         "ga_messages": dispatch_messages if dispatch_messages else [],
-        "messages": [agent_message_to_langchain(m) for m in dispatch_messages] if dispatch_messages else [],
+        "messages": (
+            [agent_message_to_langchain(m) for m in dispatch_messages]
+            if dispatch_messages else []
+        ),
     }
 
 

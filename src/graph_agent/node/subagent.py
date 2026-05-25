@@ -1,5 +1,11 @@
-"""SubAgent 执行节点——在 ReAct 循环中运行 SubAgent 完成子任务。"""
+"""SubAgent 执行节点——在 ReAct 循环中运行 SubAgent 完成子任务。
 
+采用拓扑分层并行执行：按依赖关系将 running 任务分组为多个层级，
+同一层内的任务无相互依赖，通过 ThreadPoolExecutor 并行执行。
+"""
+
+import concurrent.futures
+import re
 import threading
 from contextlib import contextmanager
 
@@ -7,6 +13,7 @@ from graph_agent.orchestration.state import OrchestrationState, OrchestrationPha
 from graph_agent.orchestration.subagent import (
     SubAgentConfig, SubAgentRegistry, register_script_tools,
 )
+from graph_agent.orchestration.dag import topological_layers
 from graph_agent.tools import ToolCenter
 from graph_agent.mcp import MCPManager
 from graph_agent.message import (
@@ -29,6 +36,9 @@ _registry = SubAgentRegistry()
 
 # Agent 身份上下文（线程局部存储）
 _agent_context = threading.local()
+
+# 并行执行的最大线程数上限
+_MAX_PARALLEL_WORKERS = 8
 
 
 def get_current_agent_name() -> str | None:
@@ -219,44 +229,233 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
     return messages[-1].content if messages else "执行超限，未获得结果"
 
 
+# ============================================================================
+# DAG 分层并行执行
+# ============================================================================
+
+
+def _resolve_placeholders_for_task(
+    task,
+    sub_results: dict[str, str],
+) -> None:
+    """JIT 解析任务描述和输入数据中的 {{task_id}} 占位符。
+
+    在任务执行前调用，使用当前已累积的 sub_results 进行替换。
+    同时将解析后的 input_data 追加到任务描述中（同原 _dispatch_tasks 行为）。
+    """
+    def _replace(match: re.Match) -> str:
+        key = match.group(1).strip()
+        if key.endswith(".result"):
+            task_id_ref = key[:-7]
+        else:
+            task_id_ref = key
+        return sub_results.get(task_id_ref, match.group(0))
+
+    task.description = re.sub(r'\{\{(.+?)\}\}', _replace, task.description)
+    for k, v in task.input_data.items():
+        if isinstance(v, str):
+            task.input_data[k] = re.sub(r'\{\{(.+?)\}\}', _replace, v)
+
+    # 将解析后的 input_data 追加到任务描述中（幂等：恢复执行时不重复追加）
+    if task.input_data and "【执行参数】" not in task.description:
+        param_lines = []
+        for k, v in task.input_data.items():
+            v_str = str(v)
+            if "\n" in v_str:
+                param_lines.append(f"- {k}:\n  \"\"\"\n  {v_str}\n  \"\"\"")
+            else:
+                param_lines.append(f"- {k}: {v_str}")
+        params_block = "\n".join(param_lines)
+        task.description = f"{task.description}\n\n【执行参数】\n{params_block}"
+
+
+def _execute_task(
+    task,
+    config: SubAgentConfig,
+    local_state: dict,
+) -> tuple[str, str, str | None]:
+    """执行单个子任务（在工作线程中运行）。
+
+    使用 local_state（state 浅拷贝）避免多线程竞争。
+    若任务内部触发 AskUserException，直接传播到主线程处理。
+
+    Returns:
+        (task_id, result_or_empty, error_or_none)
+    """
+    threading.current_thread().name = f"subagent-{task.task_id}"
+    try:
+        result = _run_subagent(config, task.description, task.task_id, local_state)
+        return (task.task_id, result, None)
+    except AskUserException:
+        raise  # 传播到主线程处理中断
+    except Exception as e:
+        return (task.task_id, "", str(e))
+
+
+def _execute_layer_parallel(
+    tasks: list,
+    state: OrchestrationState,
+) -> list[dict]:
+    """并行执行一层中的所有任务。
+
+    对每个任务：
+    - 使用 state 浅拷贝确保线程安全
+    - 无法找到 config 的任务直接标记失败
+
+    Returns:
+        [{"task_id": str, "result": str, "error": str, "status": str}, ...]
+    """
+    futures_map = {}
+    worker_count = min(len(tasks), _MAX_PARALLEL_WORKERS)
+
+    # 预处理：区分有效任务和无 config 任务
+    valid_tasks = []
+    skipped_results = []
+    for task in tasks:
+        try:
+            config = _registry.get(task.assigned_agent)
+        except KeyError:
+            config = None
+        if config is None:
+            skipped_results.append({
+                "task_id": task.task_id,
+                "result": "",
+                "error": f"未找到 SubAgent 配置: {task.assigned_agent}",
+                "status": "failed",
+            })
+        else:
+            valid_tasks.append((task, config))
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+        for task, config in valid_tasks:
+            local_state = dict(state)
+            future = executor.submit(_execute_task, task, config, local_state)
+            futures_map[future] = task
+
+        results = list(skipped_results)
+        for future in concurrent.futures.as_completed(futures_map):
+            task = futures_map[future]
+            try:
+                task_id, result, error = future.result()
+                results.append({
+                    "task_id": task_id,
+                    "result": result if not error else "",
+                    "error": error or "",
+                    "status": "failed" if error else "completed",
+                })
+            except AskUserException as e:
+                # 取消所有未开始的任务
+                for f in futures_map:
+                    f.cancel()
+                # 将已完成任务的部分结果附着到异常对象，防止恢复时重复执行
+                e._partial_results = results
+                raise
+
+    return results
+
+
 def subagent_exec_node(state: OrchestrationState) -> dict:
-    """SubAgent 执行节点：串行执行所有 running 状态的子任务。"""
+    """SubAgent 执行节点：按拓扑分层并行执行所有 running 状态的子任务。"""
     from graph_agent.acp.checkpoint import _check_interrupt
 
     task_plan = state.get("task_plan")
     if not task_plan:
         return {}
 
-    get_tracer().trace_phase("子任务执行", "SubAgent", "串行执行所有就绪的子任务")
+    # 收集所有 running 任务
+    running_tasks = [t for t in task_plan.sub_tasks if t.status == "running"]
+    if not running_tasks:
+        return {}
 
+    # 已完成任务的结果（用于占位符解析和依赖判断）
     sub_results = dict(state.get("sub_results", {}))
+
+    # 拓扑分层：同一层内的任务无相互依赖，可并行执行
+    layers = topological_layers(running_tasks)
+
+    # 保护：如果 running_tasks 非空但分层为空，说明存在未检测到的 DAG 环
+    if not layers:
+        get_tracer().trace_phase(
+            "子任务执行", "SubAgent",
+            "DAG 分层失败，将所有 running 任务标记为 failed（可能为循环依赖）",
+        )
+        for t in running_tasks:
+            t.status = "failed"
+            t.error = "DAG 分层失败：可能存在循环依赖或依赖缺失"
+        return {
+            "phase": OrchestrationPhase.RESULT_SYNTHESIS,
+            "sub_results": sub_results,
+            "task_plan": task_plan,
+            "ga_messages": [],
+            "messages": [],
+        }
+
+    get_tracer().trace_phase(
+        "子任务执行", "SubAgent",
+        f"DAG 拓扑分层并行执行: {len(layers)} 层, {len(running_tasks)} 个任务",
+    )
+
     result_messages = []
 
-    for task in task_plan.sub_tasks:
-        if task.status != "running":
+    for layer_idx, layer in enumerate(layers):
+        get_tracer().trace_phase(
+            f"执行第 {layer_idx} 层",
+            "SubAgent",
+            f"并行执行 {len(layer)} 个任务: {[t.task_id for t in layer]}",
+        )
+
+        # 检查前置任务失败 → 级联标记失败，跳过执行
+        executable_tasks = []
+        for task in layer:
+            failed_deps = [
+                dep_id for dep_id in task.dependencies
+                if any(
+                    t.task_id == dep_id and t.status == "failed"
+                    for t in task_plan.sub_tasks
+                )
+            ]
+            if failed_deps:
+                task.status = "failed"
+                task.error = f"前置任务失败: {failed_deps}"
+                sub_results[task.task_id] = ""
+                result_messages.append(create_assistant_message(
+                    content=f"前置任务失败，跳过执行: {failed_deps}",
+                    name="SubAgent",
+                    message_type=MessageType.SUBAGENT_TASK_RESULT,
+                    metadata={"task_id": task.task_id, "status": "failed"},
+                ))
+            else:
+                executable_tasks.append(task)
+
+        if not executable_tasks:
+            _check_interrupt(state)
             continue
 
-        config = None
-        if task.assigned_agent:
-            try:
-                config = _registry.get(task.assigned_agent)
-            except KeyError:
-                pass
-
-        if config is None:
-            task.status = "failed"
-            task.error = f"未找到 SubAgent: {task.assigned_agent}"
-            continue
+        # JIT 解析本层每个任务的占位符（此时前置层的结果已就绪）
+        for task in executable_tasks:
+            _resolve_placeholders_for_task(task, sub_results)
 
         try:
-            result = _run_subagent(config, task.description, task.task_id, state)
+            layer_results = _execute_layer_parallel(executable_tasks, state)
         except AskUserException as e:
+            # 处理同层中已完成任务的部分结果（防止恢复时重复执行）
+            partial_results = getattr(e, '_partial_results', [])
+            for r in partial_results:
+                tid = r["task_id"]
+                sub_results[tid] = r["result"]
+                pt = next((t for t in task_plan.sub_tasks if t.task_id == tid), None)
+                if pt:
+                    pt.status = r.get("status", "completed")
+                    pt.result = r["result"]
+                    if r.get("error"):
+                        pt.error = r["error"]
+
+            # 中断处理：保存当前状态到异常对象
             full_state = dict(state)
             if e.state and e.state.get("messages"):
                 full_state["_subagent_messages"] = e.state["messages"]
             if e.state and e.state.get("ask_user_tool_id"):
                 full_state["_ask_user_tool_id"] = e.state["ask_user_tool_id"]
-            # 保留 RBAC 升级令牌，恢复执行时可识别已授权工具
             rbac_token = (e.state or {}).get("_rbac_pending_escalation")
             if rbac_token:
                 full_state["_rbac_pending_escalation"] = rbac_token
@@ -269,29 +468,45 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
                 state=full_state,
             ) from e
 
-        sub_results[task.task_id] = result
-        task.status = "completed"
-        task.result = result
+        # 收集本层结果
+        for r in layer_results:
+            tid = r["task_id"]
+            sub_results[tid] = r["result"]
+            task = next(t for t in task_plan.sub_tasks if t.task_id == tid)
+            task.status = r.get("status", "completed")
+            task.result = r["result"]
+            if r["error"]:
+                task.error = r["error"]
 
-        msg = create_assistant_message(
-            content=result,
-            name=config.name,
-            message_type=MessageType.SUBAGENT_TASK_RESULT,
-            metadata={
-                "task_id": task.task_id,
-                "agent_name": config.name,
-            },
-        )
-        result_messages.append(msg)
+            try:
+                config = _registry.get(task.assigned_agent)
+                agent_name = config.name
+            except KeyError:
+                agent_name = task.assigned_agent or "unknown"
+            msg = create_assistant_message(
+                content=r["result"] or r["error"],
+                name=agent_name,
+                message_type=MessageType.SUBAGENT_TASK_RESULT,
+                metadata={
+                    "task_id": tid,
+                    "agent_name": agent_name,
+                    "status": task.status,
+                },
+            )
+            result_messages.append(msg)
 
         _check_interrupt(state)
 
+    # 判断下一阶段
     has_pending = any(t.status == "pending" for t in task_plan.sub_tasks)
-
-    _check_interrupt(state)
+    has_running = any(t.status == "running" for t in task_plan.sub_tasks)
 
     return {
-        "phase": OrchestrationPhase.TASK_EXECUTION if has_pending else OrchestrationPhase.RESULT_SYNTHESIS,
+        "phase": (
+            OrchestrationPhase.RESULT_SYNTHESIS
+            if not has_pending and not has_running
+            else OrchestrationPhase.TASK_EXECUTION
+        ),
         "sub_results": sub_results,
         "task_plan": task_plan,
         "ga_messages": result_messages,

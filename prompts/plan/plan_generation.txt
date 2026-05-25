@@ -81,6 +81,14 @@
 "description": "使用repo-deep-dive技能获取今日GitHub热榜并生成带中文深度介绍的增强版Markdown报告。since参数使用daily（今日）。直接返回最终报告内容。"
 ```
 
+## 依赖关系编排规则（DAG）
+1. 仔细分析子任务间的数据依赖关系，只声明真正需要的依赖
+2. 两个子任务如果没有数据依赖，不要添加依赖关系——它们可以并行执行
+3. 依赖关系必须形成有向无环图（DAG），禁止循环依赖
+4. 如果一个任务需要多个前置任务的结果，将它们都列在 dependencies 中
+5. 使用 {{{{task_id}}}} 占位符语法引用前置任务结果，同时确保 dependencies 中包含了对应的 task_id
+6. execution_strategy 字段仅用于表达整体执行意图（"parallel" 表示多数任务可并行，"sequential" 表示大部分有链式依赖），runtime 会根据 dependencies 自动计算拓扑分层执行，不会直接使用该字段做决策
+
 ## 用户意图
 {intent}
 
