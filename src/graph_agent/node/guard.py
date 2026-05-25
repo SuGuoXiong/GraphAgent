@@ -38,12 +38,22 @@ def _call_llm(system_prompt: str, user_text: str,
     provider = LLMFactory.create_from_env()
     llm = provider.get_chat_model()
 
+    # 每次 LLM 调用创建独立 callback（线程安全）
+    live_push = state.get("_live_push")
+    callbacks = None
+    if live_push is not None:
+        from graph_agent.acp.streaming_callback import ACPStreamingCallback
+        callbacks = [ACPStreamingCallback(live_push, agent_name=name)]
+
     from langchain_core.messages import SystemMessage, HumanMessage
     messages = [
         SystemMessage(content=sanitize_text(system_prompt)),
         HumanMessage(content=sanitize_text(user_text)),
     ]
-    response = llm.invoke(messages, config={"run_name": name})
+    config = {"run_name": name}
+    if callbacks:
+        config["callbacks"] = callbacks
+    response = llm.invoke(messages, config=config)
     text = sanitize_text(response.content if hasattr(response, 'content') else str(response))
 
     return create_assistant_message(

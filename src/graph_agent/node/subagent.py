@@ -169,10 +169,19 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
     # 恢复执行时注入已通过 RBAC 升级授权的工具
     _inject_approved_tools(state)
 
+    # 每次 ReAct 迭代创建独立 callback（并行 SubAgent 线程安全）
+    live_push = state.get("_live_push")
+
     with agent_execution_context(config.name):
         first_iteration = True
         for _ in range(config.max_iterations):
-            response = llm_with_tools.invoke(messages, config={"run_name": config.name})
+            invoke_config: dict = {"run_name": config.name}
+            if live_push is not None:
+                from graph_agent.acp.streaming_callback import ACPStreamingCallback
+                invoke_config["callbacks"] = [
+                    ACPStreamingCallback(live_push, agent_name=config.name)
+                ]
+            response = llm_with_tools.invoke(messages, config=invoke_config)
             messages.append(response)
 
             has_tool_calls = (hasattr(response, "tool_calls") and response.tool_calls)

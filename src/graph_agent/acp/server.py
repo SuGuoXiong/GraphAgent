@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import queue
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.messages import HumanMessage
 
@@ -188,6 +188,67 @@ class ACPEventCollector:
         }))
 
 
+class ACPLiveBroadcaster:
+    """实时事件广播器 —— 事件产生时立即推入 SSE 队列。
+
+    替代 ACPEventCollector 的 post-hoc drain 模式。
+    所有 collect_* 方法立即通过 _push 回调广播事件。
+    """
+
+    def __init__(self, session_id: str, push_fn):
+        self.session_id = session_id
+        self._push = push_fn
+        self._phase_count = 0
+        self._tool_count = 0
+
+    def push(self, msg: ACPMessage) -> None:
+        self._push(msg)
+
+    def drain(self) -> list[ACPMessage]:
+        return []
+
+    def collect_phase(self, phase_name: str, agent_name: str, detail: str = "") -> None:
+        self._phase_count += 1
+        self._push(ACPMessage.event(PushEvent.PHASE_CHANGED, {
+            "phase": phase_name,
+            "agent_name": agent_name,
+            "detail": detail,
+        }))
+
+    def collect_decision(self, agent_name: str, decision: str, reason: str = "") -> None:
+        self._push(ACPMessage.event(PushEvent.PHASE_CHANGED, {
+            "phase": "decision",
+            "agent_name": agent_name,
+            "detail": decision,
+            "reason": reason,
+        }))
+
+    def collect_tool_call(self, tool_name: str, input_args: dict) -> None:
+        self._tool_count += 1
+        self._push(ACPMessage.event(PushEvent.TOOL_CALL, {
+            "tool_name": tool_name,
+            "input_args": {k: str(v)[:200] for k, v in input_args.items()},
+        }))
+
+    def collect_tool_result(self, tool_name: str, output: str) -> None:
+        self._push(ACPMessage.event(PushEvent.TOOL_RESULT, {
+            "tool_name": tool_name,
+            "output_preview": output[:500],
+        }))
+
+    def collect_llm_start(self, agent_name: str, prompt_preview: str) -> None:
+        self._push(ACPMessage.event(PushEvent.LLM_STREAM_START, {
+            "agent_name": agent_name,
+            "prompt_preview": prompt_preview[:300],
+        }))
+
+    def collect_llm_end(self, agent_name: str, token_usage: dict | None = None) -> None:
+        self._push(ACPMessage.event(PushEvent.LLM_STREAM_END, {
+            "agent_name": agent_name,
+            "token_usage": token_usage or {},
+        }))
+
+
 class _ACPTracerHook:
     """将 OrchestrationTracer 的输出同时路由到 ACP 事件收集器。
 
@@ -195,9 +256,11 @@ class _ACPTracerHook:
     实现编排/LLM/工具事件的 ACP 推送。
     """
 
-    def __init__(self, collector: ACPEventCollector, tracer: OrchestrationTracer):
+    def __init__(self, collector: ACPEventCollector | ACPLiveBroadcaster, tracer: OrchestrationTracer,
+                 streaming_active: bool = False):
         self._collector = collector
         self._tracer = tracer
+        self._streaming_active = streaming_active
         self._original_trace_phase = tracer.trace_phase
         self._original_trace_decision = tracer.trace_decision
         self._installed = False
@@ -260,8 +323,11 @@ class _ACPTracerHook:
         register = executor.register
         register.add_session_hook(_collect_tool_call, "before_tool_call", 600, HookType.OBSERVE)
         register.add_session_hook(_collect_tool_result, "after_tool_call", 600, HookType.OBSERVE)
-        register.add_session_hook(_collect_llm_start, "before_llm_call", 600, HookType.OBSERVE)
-        register.add_session_hook(_collect_llm_end, "after_llm_call", 600, HookType.OBSERVE)
+
+        # LLM hook 仅在非流式模式下注册，避免与 ACPStreamingCallback 事件重复
+        if not self._streaming_active:
+            register.add_session_hook(_collect_llm_start, "before_llm_call", 600, HookType.OBSERVE)
+            register.add_session_hook(_collect_llm_end, "after_llm_call", 600, HookType.OBSERVE)
 
         self._installed = True
 
@@ -338,13 +404,18 @@ class ACPServer:
                 request_id=request.id,
             )
 
-    async def execute_turn(self, session_id: str, user_input: str = "") -> list[ACPMessage]:
+    async def execute_turn(self, session_id: str, user_input: str = "",
+                           live_push: Callable[[ACPMessage], None] | None = None,
+                           ) -> list[ACPMessage]:
         """执行一轮对话，返回 ACP 事件列表。
 
         支持三种模式：
         - 正常执行：user_input 非空，无 checkpoint
         - 恢复执行：user_input 为空，存在 checkpoint
         - 重新开始：user_input 非空，存在旧 checkpoint（放弃后重新开始）
+
+        live_push: 实时广播回调，由传输层注入。非 None 时使用 ACPLiveBroadcaster
+                   实现事件实时推送，并注入 _live_push 到 state 供节点层流式 LLM 使用。
         """
         events: list[ACPMessage] = []
 
@@ -444,10 +515,18 @@ class ACPServer:
         ctx.interrupt_event.clear()
         initial_state["_interrupt_event"] = ctx.interrupt_event
 
-        # 4. 安装事件收集 hook
-        collector = ACPEventCollector(session_id)
-        hook = _ACPTracerHook(collector, self._tracer)
+        # 4. 安装事件收集 hook（流式模式使用 ACPLiveBroadcaster 实时推送）
+        if live_push is not None:
+            collector: ACPEventCollector | ACPLiveBroadcaster = ACPLiveBroadcaster(session_id, live_push)
+        else:
+            collector = ACPEventCollector(session_id)
+        hook = _ACPTracerHook(collector, self._tracer,
+                              streaming_active=(live_push is not None))
         hook.install()
+
+        # 将广播函数注入 state（供节点层每次 LLM 调用时创建独立 callback）
+        if live_push is not None:
+            initial_state["_live_push"] = live_push
 
         try:
             # 5. 执行编排图（带超时和中断捕获）
@@ -697,7 +776,9 @@ class ACPServer:
             "session_id": session_id,
         }, request_id=request.id)
 
-    async def resume_session(self, session_id: str) -> list[ACPMessage]:
+    async def resume_session(self, session_id: str,
+                            live_push: Callable[[ACPMessage], None] | None = None,
+                            ) -> list[ACPMessage]:
         """从检查点恢复会话执行（支持 PAUSED 和 AWAITING_USER 状态）。"""
         ctx = self._session_manager.get_context(session_id)
         if ctx is None:
@@ -709,7 +790,7 @@ class ACPServer:
         if not ctx.checkpoint:
             return [ACPMessage.error(ErrorCode.CHECKPOINT_INVALID, "检查点数据不存在")]
 
-        return await self.execute_turn(session_id, user_input="")
+        return await self.execute_turn(session_id, user_input="", live_push=live_push)
 
     def _handle_resume_session(self, request: ACPMessage) -> ACPMessage:
         """处理恢复请求（同步 ack，实际恢复由传输层异步执行）。"""

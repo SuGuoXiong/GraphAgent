@@ -69,6 +69,9 @@ class OrchestrationState(AgentState):
     # === 会话关联（新增） ===
     _session_id: str = ""                  # 当前会话 ID，用于从 SessionManager 获取 ConversationHistory
 
+    # === 流式响应支持 ===
+    _live_push: Any = None                 # Callable[[ACPMessage], None]，由 execute_turn 注入
+
     # === 扩展点预留 ===
     user_preferences: dict | None = None   # 用户长期偏好缓存（Layer 2 扩展点）
     memory_refs: list | None = None        # Agent 记忆检索结果（Layer 3 扩展点）

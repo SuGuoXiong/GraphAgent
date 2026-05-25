@@ -20,6 +20,7 @@ class LLMConfig:
     temperature: float = 0.0
     max_tokens: Optional[int] = None
     timeout: Optional[int] = 60
+    streaming: bool = True  # 默认启用流式输出，配合 ACPStreamingCallback 使用
 
     @classmethod
     def from_env(cls, prefix: str = "LLM_") -> "LLMConfig":
@@ -40,6 +41,7 @@ class LLMConfig:
             temperature=float(get_env("TEMPERATURE", "0.0")),
             max_tokens=int(get_env("MAX_TOKENS")) if get_env("MAX_TOKENS") else None,
             timeout=int(get_env("TIMEOUT", "60")) if get_env("TIMEOUT") else None,
+            streaming=get_env("STREAMING", "true").lower() not in ("false", "0", "no"),
         )
 
 

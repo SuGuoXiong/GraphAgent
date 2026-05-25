@@ -38,6 +38,7 @@ class OpenAIProvider(LLMProvider):
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
             timeout=self.config.timeout,
+            streaming=self.config.streaming,
         )
 
 

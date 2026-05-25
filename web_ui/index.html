@@ -331,6 +331,8 @@
   var sessions = [];
   var isStreaming = false;
   var currentSSEReader = null;  // 用于中断 SSE 连接
+  var streamBuffer = '';         // 当前流式累积文本
+  var currentStreamAgent = '';   // 当前流式来源 Agent 名称
 
   function setStatus(connected, text) {
     var dot = el('#statusDot');
@@ -436,6 +438,8 @@
     input.value = '';
     input.style.height = 'auto';
     isStreaming = true;
+    streamBuffer = '';
+    currentStreamAgent = '';
     el('#btnSend').disabled = true;
     hideEl('#emptyState');
     updateSessionStatus('running');
@@ -531,7 +535,33 @@
       case 'tool_result':
         addEvent('tool', '工具返回: ' + ((msg.payload.output_preview || '').slice(0, 80)));
         break;
+      case 'llm_stream_start':
+        // Agent 切换：提交前一个 Agent 的流式输出
+        if (streamBuffer && currentStreamAgent) {
+          addEvent('phase', currentStreamAgent + ' 输出完成');
+        }
+        streamBuffer = '';
+        currentStreamAgent = msg.payload.agent_name || '';
+        if (!typingMsg) {
+          typingMsg = addTypingIndicator();
+        }
+        updateTyping(typingMsg, '**[' + currentStreamAgent + ']**\n');
+        break;
+      case 'llm_stream_chunk':
+        streamBuffer += (msg.payload.token || '');
+        if (typingMsg) {
+          var display = currentStreamAgent
+            ? '**[' + currentStreamAgent + ']**\n' + streamBuffer
+            : streamBuffer;
+          updateTyping(typingMsg, display);
+        }
+        break;
+      case 'llm_stream_end':
+        // 流式完成，内容保留在 typing 气泡中，等待下一阶段
+        break;
       case 'agent_message':
+        // 流式场景：忽略 agent_message（内容已通过 llm_stream_chunk 呈现）
+        if (streamBuffer) break;
         if (msg.payload.content) updateTyping(typingMsg, msg.payload.content);
         break;
       case 'final_answer':
@@ -633,6 +663,8 @@
     isStreaming = true;
 
     addEvent('phase', '正在恢复执行...');
+    streamBuffer = '';
+    currentStreamAgent = '';
     updateSessionStatus('resuming');
 
     // 取消旧的 SSE 连接（如果有）

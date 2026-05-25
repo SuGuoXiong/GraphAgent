@@ -42,6 +42,7 @@ class OllamaProvider(LLMProvider):
             temperature=self.config.temperature,
             num_predict=self.config.max_tokens,
             timeout=self.config.timeout,
+            streaming=self.config.streaming,
         )
 
 

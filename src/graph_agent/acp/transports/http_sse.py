@@ -245,26 +245,67 @@ class HTTPSSETransport(ACPTransport):
         self._app = app
 
     async def _execute_and_push(self, session_id: str, content: str, request_id: str) -> None:
-        """执行编排并推送事件到所有关联的 SSE 队列。"""
-        events = await self._server.execute_turn(session_id, content)
-        for q in self._event_queues.values():
-            for event in events:
-                try:
-                    q.put_nowait(event)
-                except asyncio.QueueFull:
-                    pass
-        self._executing.discard(session_id)
+        """执行编排并推送事件到所有关联的 SSE 队列。
+
+        实时事件通过 _broadcast 闭包在工作线程中直接推送；
+        终端事件（final_answer、execution_complete 等）通过返回值推送。
+        """
+        queues_snapshot = list(self._event_queues.items())
+
+        def _broadcast(msg: ACPMessage) -> None:
+            prefix = f"{session_id}_"
+            for key, q in queues_snapshot:
+                if key.startswith(prefix):
+                    try:
+                        q.put_nowait(msg)
+                    except asyncio.QueueFull:
+                        pass
+
+        try:
+            events = await self._server.execute_turn(
+                session_id, content,
+                live_push=_broadcast,
+            )
+            # 推送终端事件（final_answer、execution_complete 等）
+            prefix = f"{session_id}_"
+            for key, q in self._event_queues.items():
+                if key.startswith(prefix):
+                    for event in events:
+                        try:
+                            q.put_nowait(event)
+                        except asyncio.QueueFull:
+                            pass
+        finally:
+            self._executing.discard(session_id)
 
     async def _resume_and_push(self, session_id: str, request_id: str) -> None:
         """恢复暂停的会话并推送事件到所有关联的 SSE 队列。"""
-        events = await self._server.resume_session(session_id)
-        for q in self._event_queues.values():
-            for event in events:
-                try:
-                    q.put_nowait(event)
-                except asyncio.QueueFull:
-                    pass
-        self._executing.discard(session_id)
+        queues_snapshot = list(self._event_queues.items())
+
+        def _broadcast(msg: ACPMessage) -> None:
+            prefix = f"{session_id}_"
+            for key, q in queues_snapshot:
+                if key.startswith(prefix):
+                    try:
+                        q.put_nowait(msg)
+                    except asyncio.QueueFull:
+                        pass
+
+        try:
+            events = await self._server.resume_session(
+                session_id,
+                live_push=_broadcast,
+            )
+            prefix = f"{session_id}_"
+            for key, q in self._event_queues.items():
+                if key.startswith(prefix):
+                    for event in events:
+                        try:
+                            q.put_nowait(event)
+                        except asyncio.QueueFull:
+                            pass
+        finally:
+            self._executing.discard(session_id)
 
 
 def _error_body(code: ErrorCode, message: str, recoverable: bool = True) -> dict[str, Any]:
