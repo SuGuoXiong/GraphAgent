@@ -14,6 +14,7 @@ from graph_agent.orchestration.subagent import (
     SubAgentConfig, SubAgentRegistry, register_script_tools,
 )
 from graph_agent.orchestration.dag import topological_layers
+from graph_agent.orchestration.context_utils import get_subagent_context_builder
 from graph_agent.tools import ToolCenter
 from graph_agent.mcp import MCPManager
 from graph_agent.message import (
@@ -156,8 +157,9 @@ def _run_subagent(config: SubAgentConfig, task_description: str,
         # 避免 LLM API 报 400 错误（insufficient tool messages）
         _strip_dangling_tool_calls(messages)
     else:
+        layer4_context = state.get("subagent_contexts", {}).get(task_id, task_description) if state.get("subagent_contexts") else task_description
         messages = [SystemMessage(content=system_prompt),
-                    HumanMessage(content=sanitize_text(f"请完成以下任务:\n{task_description}"))]
+                    HumanMessage(content=sanitize_text(layer4_context))]
 
         injected = state.get("_injected_messages")
         if injected:
@@ -362,6 +364,17 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
     if not task_plan:
         return {}
 
+    _subagent_ctx_builder = get_subagent_context_builder()
+    guard_context = state.get("guard_context", [])
+    ga_messages = state.get("ga_messages", [])
+    intent_analysis = next(
+        (m for m in ga_messages
+         if m.message_type and MessageType(m.message_type) == MessageType.GUARD_INTENT_ANALYSIS),
+        None,
+    )
+    if state.get("subagent_contexts") is None:
+        state["subagent_contexts"] = {}
+
     # 收集所有 running 任务
     running_tasks = [t for t in task_plan.sub_tasks if t.status == "running"]
     if not running_tasks:
@@ -434,6 +447,17 @@ def subagent_exec_node(state: OrchestrationState) -> dict:
         # JIT 解析本层每个任务的占位符（此时前置层的结果已就绪）
         for task in executable_tasks:
             _resolve_placeholders_for_task(task, sub_results)
+
+        # 构建 Layer 4 上下文（前置层结果已就绪，依赖输入可见）
+        layer_contexts = _subagent_ctx_builder.build_for_layer(
+            layer_tasks=executable_tasks,
+            all_tasks=task_plan.sub_tasks,
+            overall_goal=task_plan.overall_goal,
+            intent_analysis=intent_analysis,
+            guard_context=guard_context,
+            expected_output_format=task_plan.expected_output_format,
+        )
+        state["subagent_contexts"].update(layer_contexts)
 
         try:
             layer_results = _execute_layer_parallel(executable_tasks, state)

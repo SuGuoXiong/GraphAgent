@@ -390,6 +390,7 @@ class ACPServer:
             is_resume = True
             ctx.status = SessionStatus.RESUMING.value
             initial_state = deserialize_checkpoint(ctx.checkpoint)
+            initial_state["_session_id"] = session_id
 
             # 如果是从 ask_user 中断恢复，将用户回答注入 SubAgent 消息流
             if ctx.checkpoint.get("reason") == "ask_user" and "user_reply" in ctx.checkpoint:
@@ -437,7 +438,7 @@ class ACPServer:
             context_msgs = ctx.history.get_context_messages()
             context_lc = agent_messages_to_langchain(context_msgs)
             context_lc.append(HumanMessage(content=user_input))
-            initial_state = {"messages": context_lc}
+            initial_state = {"messages": context_lc, "_session_id": session_id}
 
         # 3. 注入中断控制
         ctx.interrupt_event.clear()

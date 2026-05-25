@@ -1,6 +1,8 @@
 """GuardAgent 节点——意图识别、方案审核、结果验收。
 
 GuardAgent 不可见、不可调用任何 Tool，仅依赖 LLM 语义推理。
+
+上下文：通过 GuardContextBuilder 构建 Layer 2 战略视图。
 """
 
 import json
@@ -8,6 +10,10 @@ import json
 from graph_agent.orchestration.state import OrchestrationState, OrchestrationPhase
 from graph_agent.orchestration.prompt_loader import PromptLoader
 from graph_agent.orchestration.subagent import SubAgentRegistry
+from graph_agent.orchestration.context_utils import (
+    get_guard_context_builder,
+    get_history_from_state,
+)
 from graph_agent.message import (
     MessageBlock, ContentBlock,
     create_assistant_message, create_system_message,
@@ -47,15 +53,67 @@ def _call_llm(system_prompt: str, user_text: str,
     )
 
 
-def _format_context(messages: list) -> str:
-    """格式化对话上下文为纯文本。"""
-    if not messages:
-        return "(无历史消息)"
+def _build_and_format_context(state: OrchestrationState) -> str:
+    """构建 Layer 2 上下文，写回 state 并格式化为提示词可用的纯文本。"""
+    builder = get_guard_context_builder()
+    history = get_history_from_state(state)
+
+    if history is not None:
+        # ACP 场景：使用 ConversationHistory
+        from graph_agent.llm import LLMFactory
+        provider = LLMFactory.create_from_env()
+        context = builder.build(
+            history,
+            llm_provider=provider,
+            extra_messages=state.get("ga_messages", []),
+        )
+    else:
+        # 非 ACP 场景（debug.py）：从 state["messages"] 构建临时上下文
+        context = _build_context_from_messages(state)
+
+    # 写回 state：供 SubAgent 执行节点构建 Layer 4 时提取相关上下文片段
+    state["guard_context"] = context
+
+    # 格式化
     parts = []
-    for m in messages[-10:]:
-        content = m.content if isinstance(m.content, str) else str(m.content)
-        parts.append(f"[{m.type if hasattr(m, 'type') else '?'}]: {content[:500]}")
-    return "\n".join(parts)
+    for msg in context:
+        content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        parts.append(f"[{msg.message_type}]: {content}")
+    return "\n---\n".join(parts)
+
+
+def _build_context_from_messages(state: OrchestrationState) -> list[MessageBlock]:
+    """非 ACP 场景回退：从 state["messages"] + ga_messages 构建上下文。
+
+    通过 GuardContextBuilder 的过滤逻辑处理消息，
+    但不依赖 ConversationHistory。
+    """
+    messages = list(state.get("messages", []))
+    ga_messages = state.get("ga_messages", [])
+
+    from graph_agent.message.convert import langchain_to_agent_message
+    agent_msgs = []
+    for m in messages:
+        try:
+            agent_msgs.append(langchain_to_agent_message(m))
+        except Exception:
+            pass
+
+    # 合并 ga_messages（当前轮次已产生的 Agent 消息）
+    all_msgs = agent_msgs + list(ga_messages)
+
+    # 使用 Builder 的过滤和压缩逻辑
+    from graph_agent.session.context_filter import is_context_eligible
+    from graph_agent.session.guard_context_builder import _is_rejected_proposal
+    from graph_agent.session.compressor import SessionConfig, PriorityCompressor
+
+    filtered = [
+        m for m in all_msgs
+        if m.message_type and is_context_eligible(MessageType(m.message_type))
+    ]
+    filtered = [m for m in filtered if not _is_rejected_proposal(m)]
+
+    return filtered
 
 
 def _parse_json_response(text: str) -> dict:
@@ -124,7 +182,7 @@ def _analyze_intent(state: OrchestrationState) -> dict:
 
     system_prompt = _prompt_loader.load_with_context(
         "guard", "intent_analysis",
-        conversation_context=_format_context(state.get("messages", [])),
+        conversation_context=_build_and_format_context(state),
     )
     user_text = state.get("messages", [])[-1].content if state.get("messages") else ""
     msg = _call_llm(system_prompt, user_text, state,
@@ -146,7 +204,7 @@ def _review_plan(state: OrchestrationState) -> dict:
     task_plan = state.get("task_plan")
     system_prompt = _prompt_loader.load_with_context(
         "guard", "plan_review",
-        conversation_context=_format_context(state.get("messages", [])),
+        conversation_context=_build_and_format_context(state),
         task_plan=str(task_plan),
         intent=state.get("intent", ""),
         available_subagents=_registry.describe_all_for_llm(),
@@ -161,6 +219,9 @@ def _review_plan(state: OrchestrationState) -> dict:
     get_tracer().trace_decision(
         "GuardAgent", f"方案审核{decision}", result.get("feedback", ""),
     )
+
+    # 回写审核结论到对应的 PLAN_PROPOSAL 消息
+    _mark_plan_review_outcome(state, result)
 
     return {
         "phase": OrchestrationPhase.TASK_EXECUTION if approved else OrchestrationPhase.PLAN_GENERATION,
@@ -181,7 +242,7 @@ def _review_result(state: OrchestrationState) -> dict:
 
     system_prompt = _prompt_loader.load_with_context(
         "guard", "result_review",
-        conversation_context=_format_context(state.get("messages", [])),
+        conversation_context=_build_and_format_context(state),
         final_result=final_result,
         intent=state.get("intent", ""),
     )
@@ -195,6 +256,9 @@ def _review_result(state: OrchestrationState) -> dict:
     get_tracer().trace_decision(
         "GuardAgent", f"结果验收{decision}", result.get("feedback", ""),
     )
+
+    # 回写审核结论到对应的 PLAN_RESULT_SYNTHESIS 消息
+    _mark_result_review_outcome(state, result)
 
     new_retries = state.get("review_retries", 0) + (0 if approved else 1)
     max_retries = state.get("max_review_retries", 3)
@@ -213,6 +277,34 @@ def _review_result(state: OrchestrationState) -> dict:
         "ga_messages": [msg],
         "messages": [agent_message_to_langchain(msg)],
     }
+
+
+def _find_latest_message(state: OrchestrationState, msg_type: MessageType) -> MessageBlock | None:
+    """从 ga_messages 中按类型查找最新一条消息。"""
+    for m in reversed(state.get("ga_messages", [])):
+        if m.message_type and MessageType(m.message_type) == msg_type:
+            return m
+    return None
+
+
+def _mark_plan_review_outcome(state: OrchestrationState, review_result: dict) -> None:
+    """将 GuardAgent 方案审核结论回写到 PLAN_PROPOSAL 消息。"""
+    plan_msg = _find_latest_message(state, MessageType.PLAN_PROPOSAL)
+    if plan_msg is not None:
+        if plan_msg.metadata is None:
+            plan_msg.metadata = {}
+        plan_msg.metadata["approved"] = review_result.get("approved", True)
+        plan_msg.metadata["review_feedback"] = review_result.get("feedback", "")
+
+
+def _mark_result_review_outcome(state: OrchestrationState, review_result: dict) -> None:
+    """将 GuardAgent 结果验收结论回写到 PLAN_RESULT_SYNTHESIS 消息。"""
+    synth_msg = _find_latest_message(state, MessageType.PLAN_RESULT_SYNTHESIS)
+    if synth_msg is not None:
+        if synth_msg.metadata is None:
+            synth_msg.metadata = {}
+        synth_msg.metadata["approved"] = review_result.get("approved", True)
+        synth_msg.metadata["review_feedback"] = review_result.get("feedback", "")
 
 
 def guard_node(state: OrchestrationState) -> dict:

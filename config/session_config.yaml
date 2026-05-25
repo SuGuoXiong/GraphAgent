@@ -23,3 +23,34 @@ session:
   token_estimation:
     # 估算方法: "char_ratio"
     method: "char_ratio"
+
+# 四层上下文工程配置
+context_layers:
+  # Layer 2: GuardAgent 战略视图
+  guard:
+    # 上下文窗口上限（Token 数），超出则触发压缩
+    max_tokens: 32000
+    # 保留最近 N 轮完整对话，不受压缩影响
+    keep_recent_turns: 5
+    # 是否注入用户偏好（扩展点，当前未启用）
+    inject_user_preferences: false
+
+  # Layer 3: PlanAgent 战术视图
+  plan:
+    # 上下文窗口上限（Token 数），超出则触发压缩
+    max_tokens: 48000
+    # 是否注入历史任务案例（扩展点，当前未启用）
+    inject_memory_refs: false
+    # 历史案例检索数量
+    memory_top_k: 3
+
+  # Layer 4: SubAgent 执行视图
+  subagent:
+    # 每个子任务的上下文上限（Token 数）
+    max_tokens_per_task: 8000
+    # 依赖输入结果的最大长度（字符数）
+    dependency_result_max_chars: 2000
+    # 相关上下文片段提取的最大 Token 数
+    relevant_context_max_tokens: 1000
+    # 关键词匹配时要求的重叠数量
+    keyword_overlap_threshold: 2

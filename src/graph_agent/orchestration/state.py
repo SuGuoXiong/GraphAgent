@@ -61,3 +61,14 @@ class OrchestrationState(AgentState):
     _ask_user_llm_response: Any = None
     _subagent_messages: list | None = None
     _ask_user_tool_id: str = ""
+
+    # === 四层上下文（新增） ===
+    guard_context: list | None = None      # Layer 2: GuardAgent 构建的上下文，供 SubAgent 提取相关片段
+    subagent_contexts: dict | None = None  # Layer 4: {task_id: context_text} SubAgent 执行视图
+
+    # === 会话关联（新增） ===
+    _session_id: str = ""                  # 当前会话 ID，用于从 SessionManager 获取 ConversationHistory
+
+    # === 扩展点预留 ===
+    user_preferences: dict | None = None   # 用户长期偏好缓存（Layer 2 扩展点）
+    memory_refs: list | None = None        # Agent 记忆检索结果（Layer 3 扩展点）

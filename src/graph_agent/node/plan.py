@@ -1,6 +1,8 @@
 """PlanAgent 节点——任务分解、方案制定、派发执行、结果汇总。
 
 PlanAgent 不可见、不可调用任何 Tool，只能看到从配置文件加载的 SubAgent 清单。
+
+上下文：通过 PlanContextBuilder 构建 Layer 3 战术视图。
 """
 
 import json
@@ -13,6 +15,10 @@ from graph_agent.orchestration.state import (
 from graph_agent.orchestration.dag import validate_and_log
 from graph_agent.orchestration.prompt_loader import PromptLoader
 from graph_agent.orchestration.subagent import SubAgentRegistry
+from graph_agent.orchestration.context_utils import (
+    get_plan_context_builder,
+    get_history_from_state,
+)
 from graph_agent.message import (
     create_assistant_message, create_system_message,
     generate_message_id,
@@ -44,15 +50,79 @@ def _call_llm(system_prompt: str, user_text: str,
     return sanitize_text(response.content if hasattr(response, 'content') else str(response))
 
 
-def _format_context(messages: list) -> str:
-    """格式化对话上下文。"""
-    if not messages:
-        return "(无历史消息)"
+def _build_and_format_context(state: OrchestrationState) -> str:
+    """构建 Layer 3 上下文并格式化为提示词可用的纯文本。"""
+    builder = get_plan_context_builder()
+    history = get_history_from_state(state)
+
+    ga_messages = state.get("ga_messages", [])
+    intent_analysis = next(
+        (m for m in ga_messages
+         if m.message_type and MessageType(m.message_type) == MessageType.GUARD_INTENT_ANALYSIS),
+        None,
+    )
+
+    if history is not None:
+        context = builder.build(
+            history,
+            intent_analysis=intent_analysis,
+            subagent_registry=_registry,
+            extra_messages=ga_messages,
+        )
+    else:
+        # 非 ACP 场景回退
+        context = _build_context_from_messages(state, intent_analysis)
+
     parts = []
-    for m in messages[-10:]:
-        content = m.content if isinstance(m.content, str) else str(m.content)
-        parts.append(f"[{m.type if hasattr(m, 'type') else '?'}]: {content[:500]}")
-    return "\n".join(parts)
+    for msg in context:
+        content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        parts.append(f"[{msg.message_type}]: {content}")
+    return "\n---\n".join(parts)
+
+
+def _build_context_from_messages(
+    state: OrchestrationState,
+    intent_analysis: MessageBlock | None,
+) -> list[MessageBlock]:
+    """非 ACP 场景回退：从 state 构建 Layer 3 上下文。"""
+    messages = list(state.get("messages", []))
+    ga_messages = state.get("ga_messages", [])
+
+    from graph_agent.message.convert import langchain_to_agent_message
+    from graph_agent.session.context_filter import is_context_eligible
+    from graph_agent.session.guard_context_builder import _is_rejected_proposal
+
+    agent_msgs = []
+    for m in messages:
+        try:
+            agent_msgs.append(langchain_to_agent_message(m))
+        except Exception:
+            pass
+
+    all_msgs = agent_msgs + list(ga_messages)
+    filtered = [
+        m for m in all_msgs
+        if m.message_type and is_context_eligible(MessageType(m.message_type))
+    ]
+    filtered = [m for m in filtered if not _is_rejected_proposal(m)]
+
+    if intent_analysis is not None:
+        filtered.append(intent_analysis)
+
+    catalog_text = _registry.describe_all_for_llm()
+    if catalog_text:
+        from graph_agent.message import MessageBlock
+        catalog_msg = MessageBlock(
+            role="system",
+            content=f"## 可用 SubAgent 能力清单\n{catalog_text}",
+            name="SubAgentRegistry",
+            message_type=MessageType.SYSTEM_NOTIFICATION.value,
+            message_id="",
+            metadata={"source": "subagent_catalog"},
+        )
+        filtered.append(catalog_msg)
+
+    return filtered
 
 
 def _format_sub_results(sub_results: dict) -> str:
@@ -132,7 +202,7 @@ def _generate_plan(state: OrchestrationState) -> dict:
         intent=state.get("intent", ""),
         guard_feedback=state.get("guard_feedback", ""),
         available_subagents=_registry.describe_all_for_llm(),
-        conversation_context=_format_context(state.get("messages", [])),
+        conversation_context=_build_and_format_context(state),
     )
     user_text = f"请为以下意图制定任务计划:\n{state.get('intent', '')}"
     text = _call_llm(system_prompt, user_text, state, name="PlanAgent")
@@ -278,7 +348,7 @@ def _synthesize_results(state: OrchestrationState) -> dict:
         guard_feedback=state.get("guard_feedback", ""),
         task_plan=str(task_plan),
         sub_results=_format_sub_results(sub_results),
-        conversation_context=_format_context(state.get("messages", [])),
+        conversation_context=_build_and_format_context(state),
     )
     user_text = f"请汇总以下子任务结果:\n{_format_sub_results(sub_results)}"
     text = _call_llm(system_prompt, user_text, state, name="PlanAgent")
