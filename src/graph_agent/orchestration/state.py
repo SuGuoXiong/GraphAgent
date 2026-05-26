@@ -58,7 +58,6 @@ class OrchestrationState(AgentState):
     final_answer: str
     _interrupt_event: Any = None
     _injected_messages: list | None = None
-    _ask_user_llm_response: Any = None
     _subagent_messages: list | None = None
     _ask_user_tool_id: str = ""
 

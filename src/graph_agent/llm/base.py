@@ -172,27 +172,11 @@ class LLMFactory:
     """LLM 实例工厂类。"""
 
     _providers: ClassVar[dict[str, Type[LLMProvider]]] = {}
-    _callbacks: ClassVar[list] = []
 
     @classmethod
     def register_provider(cls, name: str, provider_class: Type[LLMProvider]):
         """注册新的 LLM 提供商。"""
         cls._providers[name] = provider_class
-
-    @classmethod
-    def register_callback(cls, callback) -> None:
-        """注册 LangChain callback handler，所有 LLM 调用自动拦截。
-
-        已废弃：LLM/工具调用追踪已迁移到 Hook 机制（hook/builtin/tracer_hooks.py）。
-        保留此方法以兼容调用方，但 callback 不再被注入到 provider。
-        """
-        if callback not in cls._callbacks:
-            cls._callbacks.append(callback)
-
-    @classmethod
-    def get_callbacks(cls) -> list:
-        """获取当前注册的所有 callback（已废弃，返回空列表）。"""
-        return list(cls._callbacks)
 
     @classmethod
     def create(cls, config: LLMConfig, wrap_hooks: bool = True) -> LLMProvider:

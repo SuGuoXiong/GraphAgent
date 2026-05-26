@@ -473,10 +473,6 @@ class ACPServer:
                 if subagent_msgs and tool_call_id:
                     _append_tool_result(subagent_msgs, tool_call_id, user_reply)
                 else:
-                    # 兼容旧检查点（使用 _ask_user_llm_response）
-                    ask_llm = initial_state.pop("_ask_user_llm_response", None)
-                    if ask_llm is not None:
-                        initial_state["messages"].append(ask_llm)
                     initial_state = _inject_user_reply(
                         initial_state, user_reply,
                         tool_call_id=tool_call_id,

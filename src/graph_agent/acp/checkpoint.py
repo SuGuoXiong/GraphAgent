@@ -118,15 +118,6 @@ def serialize_checkpoint(state: dict, session_id: str, reason: str) -> dict:
         except Exception:
             serialized_ga.append(str(m))
 
-    # ── _ask_user_llm_response 序列化（兼容旧检查点）─
-    ask_user_llm_resp = state.get("_ask_user_llm_response")
-    serialized_ask_user_llm = None
-    if ask_user_llm_resp is not None:
-        try:
-            serialized_ask_user_llm = message_to_dict(ask_user_llm_resp)
-        except Exception:
-            serialized_ask_user_llm = None
-
     # ── _subagent_messages 序列化 ─────────────────────
     subagent_msgs = state.get("_subagent_messages", [])
     serialized_subagent_msgs = []
@@ -157,7 +148,6 @@ def serialize_checkpoint(state: dict, session_id: str, reason: str) -> dict:
         "final_answer": state.get("final_answer", ""),
         "messages": serialized_messages,
         "ga_messages": serialized_ga,
-        "_ask_user_llm_response": serialized_ask_user_llm,
         "_ask_user_tool_id": ask_user_tool_id,
         "_subagent_messages": serialized_subagent_msgs,
         "session_id": session_id,
@@ -230,16 +220,6 @@ def deserialize_checkpoint(checkpoint: dict) -> dict:
             except Exception:
                 pass
 
-    # ── _ask_user_llm_response 恢复（兼容旧检查点）───
-    ask_user_llm_raw = checkpoint.get("_ask_user_llm_response")
-    ask_user_llm_resp = None
-    if ask_user_llm_raw:
-        try:
-            msgs = messages_from_dict([ask_user_llm_raw])
-            ask_user_llm_resp = msgs[0] if msgs else None
-        except Exception:
-            ask_user_llm_resp = None
-
     # ── _subagent_messages 恢复 ───────────────────────
     subagent_msgs = []
     for raw in checkpoint.get("_subagent_messages", []):
@@ -259,7 +239,6 @@ def deserialize_checkpoint(checkpoint: dict) -> dict:
         "final_answer": checkpoint.get("final_answer", ""),
         "messages": messages,
         "ga_messages": ga_msgs,
-        "_ask_user_llm_response": ask_user_llm_resp,
         "_ask_user_tool_id": checkpoint.get("_ask_user_tool_id", ""),
         "_subagent_messages": subagent_msgs,
     }
