@@ -111,6 +111,8 @@ class HTTPSSETransport(ACPTransport):
 
                 if session_id not in self._executing:
                     self._executing.add(session_id)
+                    # 合并上一轮对话的暂存记忆
+                    server._consolidate_memory(session_id)
                     asyncio.create_task(
                         self._execute_and_push(session_id, content, acp_msg.id)
                     )

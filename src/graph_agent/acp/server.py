@@ -507,6 +507,9 @@ class ACPServer:
             context_lc.append(HumanMessage(content=user_input))
             initial_state = {"messages": context_lc, "_session_id": session_id}
 
+        # 2.5 注入记忆系统数据
+        self._inject_memory_into_state(initial_state)
+
         # 3. 注入中断控制
         ctx.interrupt_event.clear()
         initial_state["_interrupt_event"] = ctx.interrupt_event
@@ -612,6 +615,9 @@ class ACPServer:
                 "content": final_answer,
             }))
 
+            # 8.5 异步提取记忆（不阻塞返回）
+            self._extract_memory_async(session_id, result)
+
             # 9. 清理检查点，标记完成
             ctx.checkpoint = None
             ctx.status = SessionStatus.COMPLETED.value
@@ -652,6 +658,58 @@ class ACPServer:
 
         ctx.touch()
         return events
+
+    # ── 记忆系统集成 ──────────────────────────────────────
+
+    def _inject_memory_into_state(self, initial_state: dict) -> None:
+        """将用户画像和主题记忆索引注入编排初始状态。"""
+        try:
+            from graph_agent.orchestration.context_utils import get_memory_manager
+            mgr = get_memory_manager()
+            if mgr is None:
+                return
+            user_prefs, mem_index = mgr.load()
+            if user_prefs:
+                initial_state["user_preferences"] = user_prefs
+            if mem_index:
+                initial_state["memory_refs"] = mem_index
+        except Exception:
+            pass  # 记忆加载失败不影响主流程
+
+    def _consolidate_memory(self, session_id: str) -> None:
+        """合并暂存区增量记忆到正式存储（下一个 send_message 时调用）。"""
+        try:
+            from graph_agent.orchestration.context_utils import get_memory_manager
+            mgr = get_memory_manager()
+            if mgr:
+                mgr.consolidate(session_id)
+        except Exception:
+            pass
+
+    def _extract_memory_async(self, session_id: str, result: dict) -> None:
+        """异步提取本轮对话的记忆（不阻塞返回）。"""
+        try:
+            from graph_agent.orchestration.context_utils import get_memory_manager
+            mgr = get_memory_manager()
+            if mgr is None:
+                return
+
+            ctx = self._session_manager.get_context(session_id)
+            if ctx is None:
+                return
+
+            messages = list(ctx.history.messages)
+            task_summary = result.get("intent", "")
+            final_answer = result.get("final_answer", "")
+
+            mgr.extract_async(
+                session_id,
+                messages,
+                task_summary=task_summary,
+                user_feedback="",
+            )
+        except Exception:
+            pass  # 记忆提取失败不影响主流程
 
     # ── 内部处理器 ────────────────────────────────────────
 

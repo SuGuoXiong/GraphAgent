@@ -39,6 +39,10 @@ class MessageType(Enum):
     TOOL_CALL = "tool_call"                           # Agent 调用工具请求
     TOOL_RESULT = "tool_result"                       # 工具执行结果
 
+    # === P1: 记忆系统（系统级上下文注入） ===
+    SYSTEM_MEMORY_PROFILE = "system_memory_profile"    # 用户画像注入
+    SYSTEM_MEMORY_TOPIC = "system_memory_topic"        # 主题记忆注入
+
     # === 通用回退（仅用于 LangChain 反向转换等无上下文场景）===
     AGENT_RESPONSE = "agent_response"
 
@@ -59,6 +63,8 @@ _COMPRESSION_PRIORITY: dict[MessageType, int] = {
     MessageType.SUBAGENT_TASK_RESULT: 3,
     MessageType.TOOL_CALL: 4,
     MessageType.TOOL_RESULT: 4,
+    MessageType.SYSTEM_MEMORY_PROFILE: 1,
+    MessageType.SYSTEM_MEMORY_TOPIC: 1,
     MessageType.AGENT_RESPONSE: 2,
 }
 

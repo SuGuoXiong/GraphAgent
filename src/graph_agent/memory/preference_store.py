@@ -1,56 +1,41 @@
-"""用户长期偏好存储 —— Layer 2 扩展点（空壳实现）。
+"""用户长期偏好存储 —— Layer 2 扩展点。
 
-未来在此模块中实现用户偏好的持久化存储、自动发现和衰减机制。
-当前空壳实现直接返回空结果，不影响主流程。
+基于文件存储的用户画像管理，提供偏好注入到 GuardAgent 上下文。
+通过 MemoryManager 统一管理存储、提取和衰减。
 """
 
 from __future__ import annotations
 
-from abc import ABC
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from graph_agent.message import MessageBlock
+    from graph_agent.memory.memory_manager import MemoryManager
 
 
-class UserPreferenceStore(ABC):
-    """用户长期偏好存储（抽象基类，当前为空壳实现）。
+class UserPreferenceStore:
+    """用户长期偏好存储 —— 委托给 MemoryManager 实现。
 
-    使用具体方法而非 @abstractmethod，使得未实现子类化时仍可
-    直接实例化，表现为"无偏好"（空壳模式）。
-
-    未来实现方向：
-    - 存储后端：SQLite / JSON 文件
-    - 偏好发现：从 GuardAgent 的审核反馈中自动提取
-    - 偏好衰减：长时间未确认的偏好自动过期
+    作为 GuardContextBuilder 的 preference_store 参数注入，
+    提供 to_context_message() 用于 Layer 2 上下文注入。
     """
 
-    def get_preferences(self, user_id: str) -> dict:
-        """获取用户偏好，返回 {key: value} 字典。"""
-        return {}
+    def __init__(self, manager: "MemoryManager | None" = None):
+        self._manager = manager
 
-    def update_preference(self, user_id: str, key: str, value) -> None:
-        """更新单条偏好。"""
-        pass
+    def set_manager(self, manager: "MemoryManager") -> None:
+        self._manager = manager
 
-    def delete_preference(self, user_id: str, key: str) -> None:
-        """删除单条偏好。"""
-        pass
-
-    def to_context_message(self, user_id: str) -> MessageBlock | None:
-        """将用户偏好格式化为上下文消息（Layer 2 注入时调用）。"""
-        prefs = self.get_preferences(user_id)
-        if not prefs:
+    def get_preferences(self) -> dict | None:
+        """获取当前用户画像（完整 dict）。"""
+        if self._manager is None:
             return None
-        from graph_agent.message import MessageBlock
-        from graph_agent.message.message_type import MessageType
+        prefs, _ = self._manager.load()
+        return prefs
 
-        lines = [f"- {k}: {v}" for k, v in prefs.items()]
-        return MessageBlock(
-            role="system",
-            content="## 用户长期偏好\n" + "\n".join(lines),
-            name="PreferenceStore",
-            message_type=MessageType.SYSTEM_NOTIFICATION.value,
-            message_id="",
-            metadata={"source": "user_preference"},
-        )
+    def to_context_message(self) -> "MessageBlock | None":
+        """将用户画像格式化为上下文消息（Layer 2 注入时调用）。"""
+        prefs = self.get_preferences()
+        if not prefs or self._manager is None:
+            return None
+        return self._manager.to_profile_message(prefs)

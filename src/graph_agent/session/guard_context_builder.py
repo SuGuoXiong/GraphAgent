@@ -103,9 +103,9 @@ class GuardContextBuilder:
         if token_count > self._config.aggressive_threshold_tokens and llm_provider:
             filtered = self._summary_compressor.compress(temp_history, llm_provider)
 
-        # 6. [未来] 注入用户长期偏好
-        if self._preference_store and user_id:
-            pref_msg = self._preference_store.to_context_message(user_id)
+        # 6. 注入用户长期偏好（记忆系统 Layer 2）
+        if self._preference_store:
+            pref_msg = self._preference_store.to_context_message()
             if pref_msg:
                 filtered.insert(0, pref_msg)
 
