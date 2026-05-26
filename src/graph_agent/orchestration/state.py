@@ -15,7 +15,6 @@ class OrchestrationPhase(Enum):
     PLAN_REVIEW = "plan_review"               # GuardAgent 审核方案
     TASK_EXECUTION = "task_execution"         # SubAgent 并行执行子任务
     RESULT_SYNTHESIS = "result_synthesis"     # PlanAgent 汇总结果
-    RESULT_REVIEW = "result_review"           # GuardAgent 审核最终结果
     COMPLETED = "completed"                   # 任务完成
 
 
@@ -52,7 +51,6 @@ class OrchestrationState(AgentState):
     task_plan: TaskPlan | None
     sub_results: Annotated[dict[str, str], operator.or_]
     plan_approved: bool
-    result_approved: bool
     review_retries: int
     max_review_retries: int
     final_answer: str

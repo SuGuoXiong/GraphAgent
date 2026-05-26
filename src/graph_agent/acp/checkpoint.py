@@ -69,7 +69,7 @@ def serialize_checkpoint(state: dict, session_id: str, reason: str) -> dict:
     """将 OrchestrationState 序列化为可持久化的检查点字典。
 
     处理关键字段：
-    - phase, intent, plan_approved, result_approved 等基础字段
+    - phase, intent, plan_approved 等基础字段
     - task_plan (dataclass → dict，含 SubTask 列表)
     - messages (LangChain 消息 → dict)
     - ga_messages (MessageBlock → 兼容 dict)
@@ -143,7 +143,6 @@ def serialize_checkpoint(state: dict, session_id: str, reason: str) -> dict:
         "task_plan": task_plan_dict,
         "sub_results": state.get("sub_results", {}),
         "plan_approved": state.get("plan_approved", False),
-        "result_approved": state.get("result_approved", False),
         "review_retries": state.get("review_retries", 0),
         "final_answer": state.get("final_answer", ""),
         "messages": serialized_messages,
@@ -163,7 +162,7 @@ def deserialize_checkpoint(checkpoint: dict) -> dict:
     """从检查点字典恢复 OrchestrationState 的初始值。
 
     恢复内容包括：
-    - 基础状态字段 (phase, intent, plan_approved, result_approved 等)
+    - 基础状态字段 (phase, intent, plan_approved 等)
     - task_plan (dict → TaskPlan dataclass)
     - messages (dict → LangChain 消息)
     - ga_messages (dict → MessageBlock)
@@ -234,7 +233,6 @@ def deserialize_checkpoint(checkpoint: dict) -> dict:
         "task_plan": task_plan,
         "sub_results": checkpoint.get("sub_results", {}),
         "plan_approved": checkpoint.get("plan_approved", False),
-        "result_approved": checkpoint.get("result_approved", False),
         "review_retries": checkpoint.get("review_retries", 0),
         "final_answer": checkpoint.get("final_answer", ""),
         "messages": messages,
@@ -262,7 +260,6 @@ def generate_recovery_hint(checkpoint: dict) -> str:
         "plan_review": "任务计划已制定，等待审核",
         "task_execution": f"任务已执行 {completed}/{total_tasks} 个子任务，恢复后将继续执行剩余子任务",
         "result_synthesis": "子任务已全部执行完毕，正在汇总结果",
-        "result_review": "结果汇总已完成，等待审核",
         "completed": "任务已全部完成",
     }
     return hints.get(phase, f"编排阶段: {phase}")

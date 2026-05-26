@@ -1,4 +1,4 @@
-"""GuardAgent 节点——意图识别、方案审核、结果验收。
+"""GuardAgent 节点——意图识别、方案审核。
 
 GuardAgent 不可见、不可调用任何 Tool，仅依赖 LLM 语义推理。
 
@@ -243,52 +243,6 @@ def _review_plan(state: OrchestrationState) -> dict:
     }
 
 
-def _review_result(state: OrchestrationState) -> dict:
-    """结果验收阶段。"""
-    get_tracer().trace_phase("结果验收", "GuardAgent", "根据原始意图验收最终结果")
-
-    sub_results = state.get("sub_results", {})
-    final_result = "\n".join(f"{k}: {v}" for k, v in sub_results.items())
-
-    system_prompt = _prompt_loader.load_with_context(
-        "guard", "result_review",
-        conversation_context=_build_and_format_context(state),
-        final_result=final_result,
-        intent=state.get("intent", ""),
-    )
-    user_text = f"请验收以下最终结果:\n{final_result}"
-    msg = _call_llm(system_prompt, user_text, state,
-                    name="GuardAgent", message_type=MessageType.GUARD_RESULT_REVIEW)
-    result = _parse_json_response(msg.content if isinstance(msg.content, str) else "")
-
-    approved = result.get("approved", True)
-    decision = "通过" if approved else "驳回"
-    get_tracer().trace_decision(
-        "GuardAgent", f"结果验收{decision}", result.get("feedback", ""),
-    )
-
-    # 回写审核结论到对应的 PLAN_RESULT_SYNTHESIS 消息
-    _mark_result_review_outcome(state, result)
-
-    new_retries = state.get("review_retries", 0) + (0 if approved else 1)
-    max_retries = state.get("max_review_retries", 3)
-    exceeded = new_retries >= max_retries
-
-    if exceeded and not approved:
-        get_tracer().trace_decision(
-            "GuardAgent", f"重试次数已达上限({max_retries})，强制结束",
-        )
-
-    return {
-        "phase": OrchestrationPhase.COMPLETED if (approved or exceeded) else OrchestrationPhase.RESULT_SYNTHESIS,
-        "result_approved": approved,
-        "guard_feedback": result.get("feedback", ""),
-        "review_retries": new_retries,
-        "ga_messages": [msg],
-        "messages": [agent_message_to_langchain(msg)],
-    }
-
-
 def _find_latest_message(state: OrchestrationState, msg_type: MessageType) -> MessageBlock | None:
     """从 ga_messages 中按类型查找最新一条消息。"""
     for m in reversed(state.get("ga_messages", [])):
@@ -307,16 +261,6 @@ def _mark_plan_review_outcome(state: OrchestrationState, review_result: dict) ->
         plan_msg.metadata["review_feedback"] = review_result.get("feedback", "")
 
 
-def _mark_result_review_outcome(state: OrchestrationState, review_result: dict) -> None:
-    """将 GuardAgent 结果验收结论回写到 PLAN_RESULT_SYNTHESIS 消息。"""
-    synth_msg = _find_latest_message(state, MessageType.PLAN_RESULT_SYNTHESIS)
-    if synth_msg is not None:
-        if synth_msg.metadata is None:
-            synth_msg.metadata = {}
-        synth_msg.metadata["approved"] = review_result.get("approved", True)
-        synth_msg.metadata["review_feedback"] = review_result.get("feedback", "")
-
-
 def guard_node(state: OrchestrationState) -> dict:
     """GuardAgent 节点：根据当前 phase 执行对应职责。"""
     from graph_agent.acp.checkpoint import _check_interrupt
@@ -327,8 +271,6 @@ def guard_node(state: OrchestrationState) -> dict:
         result = _analyze_intent(state)
     elif phase == OrchestrationPhase.PLAN_REVIEW:
         result = _review_plan(state)
-    elif phase == OrchestrationPhase.RESULT_REVIEW:
-        result = _review_result(state)
     else:
         result = {}
 
@@ -357,17 +299,6 @@ def guard_router(state: OrchestrationState) -> str:
 
     if phase == OrchestrationPhase.TASK_EXECUTION:
         # guard 审核通过方案 → PlanAgent 派发任务
-        return "plan"
-
-    if phase == OrchestrationPhase.RESULT_SYNTHESIS:
-        # guard 驳回结果 → PlanAgent 重新汇总
-        return "plan"
-
-    if phase == OrchestrationPhase.RESULT_REVIEW:
-        # guard 刚完成结果审核
-        max_retries = state.get("max_review_retries", 3)
-        if state.get("result_approved") or state.get("review_retries", 0) >= max_retries:
-            return "__end__"
         return "plan"
 
     if phase == OrchestrationPhase.COMPLETED:

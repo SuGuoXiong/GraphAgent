@@ -11,7 +11,6 @@ class PromptLoader:
         "guard": {
             "intent_analysis": "你是一个 GuardAgent，负责准确理解用户需求并提炼核心意图。",
             "plan_review": "你是一个 GuardAgent，负责审核执行方案的合理性和完整性。",
-            "result_review": "你是一个 GuardAgent，负责验收最终结果是否符合用户期望。",
         },
         "plan": {
             "plan_generation": "你是一个 PlanAgent，负责将任务分解为可执行的子任务。",

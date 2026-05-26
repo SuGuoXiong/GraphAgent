@@ -374,7 +374,7 @@ def _synthesize_results(state: OrchestrationState) -> dict:
     )
 
     return {
-        "phase": OrchestrationPhase.RESULT_REVIEW,
+        "phase": OrchestrationPhase.COMPLETED,
         "final_answer": final_answer,
         "ga_messages": [msg],
         "messages": [agent_message_to_langchain(msg)],
@@ -422,10 +422,6 @@ def plan_router(state: OrchestrationState) -> str:
     if phase == OrchestrationPhase.RESULT_SYNTHESIS:
         # 所有子任务完成 → plan 再次执行（汇总结果）
         return "plan"
-
-    if phase == OrchestrationPhase.RESULT_REVIEW:
-        # plan 刚完成结果汇总 → GuardAgent 验收结果
-        return "guard"
 
     if phase == OrchestrationPhase.COMPLETED:
         return "__end__"

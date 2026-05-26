@@ -6,19 +6,19 @@
 <title>GraphAgent Console</title>
 <style>
   :root {
-    --bg: #0f1117;
-    --sidebar-bg: #161822;
-    --card-bg: #1a1d2e;
-    --border: #2a2d3e;
-    --text: #e1e4eb;
-    --text-muted: #8b8fa3;
-    --accent: #6c8cff;
-    --accent-hover: #8ba4ff;
-    --success: #34d399;
-    --warning: #fbbf24;
-    --error: #f87171;
-    --user-msg: #1e3a5f;
-    --agent-msg: #1a2a1f;
+    --bg: #f5f6f8;
+    --sidebar-bg: #ffffff;
+    --card-bg: #ffffff;
+    --border: #dde1e6;
+    --text: #1a1a2e;
+    --text-muted: #687080;
+    --accent: #4a60f0;
+    --accent-hover: #3a50d0;
+    --success: #16a34a;
+    --warning: #d97706;
+    --error: #dc2626;
+    --user-msg: #e8f0fe;
+    --agent-msg: #f0fdf4;
     --radius: 10px;
     --radius-sm: 6px;
   }
@@ -44,15 +44,15 @@
     background: var(--card-bg); color: var(--text); cursor:pointer;
     font-size:13px; font-weight:500; transition: all 0.15s;
   }
-  .btn:hover { background: #252840; border-color: #3a3d52; }
+  .btn:hover { background: #e8ecf1; border-color: #c8cdd6; }
   .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .btn-primary:hover { background: var(--accent-hover); }
   .btn-danger { color: var(--error); }
-  .btn-danger:hover { background: #3d1f1f; border-color: #5a2a2a; }
-  .btn-warning { color: var(--warning); border-color: #5a4a2a; }
-  .btn-warning:hover { background: #3d2f1a; border-color: #7a6a2a; }
-  .btn-success { color: var(--success); border-color: #2a5a3a; }
-  .btn-success:hover { background: #1f3d2a; border-color: #3a7a4a; }
+  .btn-danger:hover { background: #fee2e2; border-color: #fca5a5; }
+  .btn-warning { color: var(--warning); border-color: #fde68a; }
+  .btn-warning:hover { background: #fef3c7; border-color: #fcd34d; }
+  .btn-success { color: var(--success); border-color: #bbf7d0; }
+  .btn-success:hover { background: #dcfce7; border-color: #86efac; }
   .btn-sm { padding:4px 10px; font-size:12px; }
 
   .status-dot.paused { background: var(--warning); }
@@ -96,8 +96,8 @@
     width:34px; height:34px; border-radius:50%; display:flex;
     align-items:center; justify-content:center; font-size:16px; flex-shrink:0;
   }
-  .message.user .message-avatar { background: #2a4a7a; }
-  .message.agent .message-avatar { background: #2a5a3a; }
+  .message.user .message-avatar { background: #93c5fd; }
+  .message.agent .message-avatar { background: #86efac; }
 
   .message-bubble {
     padding:12px 16px; border-radius: var(--radius); font-size:14px; line-height:1.6;
@@ -107,7 +107,7 @@
   .message.agent .message-bubble { background: var(--agent-msg); border-bottom-left-radius:4px; }
 
   .message-bubble pre {
-    background: #0d1117; border:1px solid var(--border); border-radius: var(--radius-sm);
+    background: #f1f3f5; border:1px solid var(--border); border-radius: var(--radius-sm);
     padding:12px 16px; overflow-x:auto; font-size:13px; line-height:1.5; margin:8px 0;
   }
   .message-bubble code { font-family: 'Cascadia Code', 'Fira Code', monospace; font-size:13px; }
@@ -115,7 +115,7 @@
   .message-bubble ul, .message-bubble ol { margin:4px 0; padding-left:20px; }
   .message-bubble blockquote {
     border-left:3px solid var(--accent); margin:8px 0; padding:4px 12px;
-    color: var(--text-muted); background: rgba(108,140,255,0.05);
+    color: var(--text-muted); background: rgba(74,96,240,0.06);
   }
 
   .event-card {
@@ -124,9 +124,9 @@
     color: var(--text-muted); display:flex; align-items:center; gap:8px;
     animation: fadeIn 0.2s ease; max-width:90%;
   }
-  .event-card.tool { border-color: #5a4a2a; color: var(--warning); }
-  .event-card.phase { border-color: #2a4a5a; color: #60a5fa; }
-  .event-card.error { border-color: #5a2a2a; color: var(--error); }
+  .event-card.tool { border-color: #fde68a; color: #b45309; }
+  .event-card.phase { border-color: #bfdbfe; color: #3b82f6; }
+  .event-card.error { border-color: #fecaca; color: var(--error); }
 
   .chat-input-area { padding:16px 24px; border-top:1px solid var(--border); }
   .chat-input-wrap {
@@ -161,7 +161,7 @@
   ::-webkit-scrollbar { width:6px; }
   ::-webkit-scrollbar-track { background:transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius:3px; }
-  ::-webkit-scrollbar-thumb:hover { background: #3a3d52; }
+  ::-webkit-scrollbar-thumb:hover { background: #bcc0c8; }
 
   .typing-dots { display:flex; gap:4px; padding:4px 0; }
   .typing-dots span { width:6px; height:6px; background:var(--text-muted); border-radius:50%; animation: bounce 1.2s infinite; }
@@ -188,7 +188,7 @@
     color: var(--text); cursor:pointer; font-size:13px;
     transition: all 0.15s;
   }
-  .ask-user-card .option-btn:hover { border-color: var(--accent); background: #1e2550; }
+  .ask-user-card .option-btn:hover { border-color: var(--accent); background: #e0e7ff; }
   .ask-user-card .reply-area { display:flex; gap:8px; margin-top:12px; }
   .ask-user-card .reply-input {
     flex:1; padding:8px 12px; border:1px solid var(--border); border-radius: var(--radius-sm);
@@ -202,6 +202,126 @@
   .ask-user-card .send-btn:hover { background: var(--accent-hover); }
   .ask-user-card .send-btn:disabled { opacity:0.4; cursor:not-allowed; }
   .ask-user-card .approval-btns { display:flex; gap:8px; margin-top:12px; }
+
+  /* ── Phase sections ──────────────────────────── */
+  .phase-section {
+    width: 100%;
+    margin: 3px 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--card-bg);
+    animation: fadeIn 0.2s ease;
+  }
+  .phase-section.collapsed {
+    border-color: transparent;
+    background: var(--bg);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .phase-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px; cursor: pointer; user-select: none;
+    background: transparent; transition: background 0.2s;
+  }
+  .phase-header:hover { background: rgba(74,96,240,0.06); }
+  .phase-section.collapsed .phase-header {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+  }
+  .phase-section.collapsed .phase-header:hover {
+    background: rgba(74,96,240,0.06);
+  }
+
+  .phase-status-icon {
+    width: 18px; height: 18px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; flex-shrink: 0; position: relative;
+  }
+  .phase-status-icon.running {
+    border: 2px solid #3b82f6;
+    border-top-color: transparent;
+    animation: phase-spin 0.8s linear infinite;
+  }
+  .phase-status-icon.completed { background: #22c55e; color: #fff; }
+  .phase-status-icon.completed::after { content: '✓'; }
+
+  @keyframes phase-spin { to { transform: rotate(360deg); } }
+
+  .phase-label { font-weight: 600; font-size: 13px; color: var(--text); }
+  .phase-agent-name {
+    font-size: 11px; color: var(--text-muted);
+    background: rgba(0,0,0,0.05); padding: 2px 8px; border-radius: 10px;
+  }
+  .phase-status-text { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+  .phase-toggle-icon {
+    font-size: 11px; color: var(--text-muted);
+    transition: transform 0.2s; margin-left: 4px; flex-shrink: 0;
+  }
+  .phase-hint {
+    display: none;
+    font-size: 10px; color: var(--accent); margin-left: 2px;
+  }
+  .phase-section .collapsed-phase-hint {
+    display: inline;
+  }
+
+  .phase-body {
+    padding: 12px 14px; max-height: 2500px; overflow-y: auto;
+    border-top: 1px solid var(--border);
+  }
+  .phase-body.collapsed {
+    display: none;
+  }
+
+  .phase-content { font-size: 13px; line-height: 1.6; color: var(--text); }
+  .phase-content pre {
+    background: #f1f3f5; border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 10px 14px;
+    overflow-x: auto; font-size: 12px; line-height: 1.5; margin: 6px 0;
+  }
+  .phase-content code { font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 12px; }
+  .phase-content p { margin: 4px 0; }
+  .phase-content ul, .phase-content ol { margin: 4px 0; padding-left: 20px; }
+  .phase-content blockquote {
+    border-left: 3px solid var(--accent); margin: 6px 0; padding: 2px 10px;
+    color: var(--text-muted); background: rgba(74,96,240,0.06);
+  }
+
+  /* ── Inline tool calls ───────────────────────── */
+  .inline-tool {
+    margin: 4px 0; padding: 5px 10px;
+    background: rgba(217,119,6,0.06); border-left: 2px solid #d97706;
+    border-radius: 0 4px 4px 0; font-size: 12px;
+    color: var(--text-muted); font-family: 'Cascadia Code', 'Fira Code', monospace;
+  }
+  .inline-tool .tool-action { font-weight: 600; color: #b45309; }
+
+  /* ── Final result block ──────────────────────── */
+  .final-result {
+    align-self: stretch; margin: 12px 0;
+    border-left: 3px solid var(--accent);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    background: var(--card-bg); padding: 16px 20px;
+    animation: fadeIn 0.3s ease;
+  }
+  .final-result-header {
+    font-weight: 700; font-size: 14px; margin-bottom: 10px;
+    color: var(--text); display: flex; align-items: center; gap: 6px;
+  }
+  .final-result-body { font-size: 14px; line-height: 1.7; color: var(--text); }
+  .final-result-body pre {
+    background: #f1f3f5; border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 12px 16px;
+    overflow-x: auto; font-size: 13px; line-height: 1.5; margin: 8px 0;
+  }
+  .final-result-body code { font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 13px; }
+  .final-result-body p { margin: 6px 0; }
+  .final-result-body ul, .final-result-body ol { margin: 6px 0; padding-left: 20px; }
+  .final-result-body blockquote {
+    border-left: 3px solid var(--accent); margin: 8px 0;
+    padding: 4px 12px; color: var(--text-muted);
+  }
 </style>
 </head>
 <body>
@@ -220,8 +340,8 @@
     <div class="sidebar-footer">
       <div style="margin-bottom:8px;">
         <input type="text" id="serverUrl" spellcheck="false"
-         style="width:100%;padding:6px 8px;border:1px solid var(--border-color);border-radius:6px;
-                background:var(--bg-secondary);color:var(--text-primary);font-size:12px;
+         style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;
+                background:var(--bg);color:var(--text);font-size:12px;
                 font-family:monospace;box-sizing:border-box;"
          title="ACP 服务地址">
       </div>
@@ -333,6 +453,22 @@
   var currentSSEReader = null;  // 用于中断 SSE 连接
   var streamBuffer = '';         // 当前流式累积文本
   var currentStreamAgent = '';   // 当前流式来源 Agent 名称
+  var phaseSections = [];        // 当前轮次所有阶段容器
+  var currentPhaseId = null;     // 当前正在运行的阶段 ID
+  var isPhaseStreaming = false;  // 当前阶段是否正在流式输出
+
+  var PHASE_ID_MAP = {
+    '意图分析': 'intent_analysis',
+    '方案制定': 'plan_generation',
+    '方案审核': 'plan_review',
+    '任务派发': 'task_dispatch',
+    '任务执行': 'task_execution',
+    '结果汇总': 'result_synthesis',
+  };
+
+  function getPhaseId(label) {
+    return PHASE_ID_MAP[label] || label.replace(/\s/g, '_').toLowerCase();
+  }
 
   function setStatus(connected, text) {
     var dot = el('#statusDot');
@@ -426,7 +562,6 @@
     if (isStreaming || !activeSessionId) return;
     if (sessionStatus === 'paused' || sessionStatus === 'running' || sessionStatus === 'resuming' || sessionStatus === 'awaiting_user') return;
 
-    // 如果会话处于 paused 状态但用户输入了新消息，放弃旧检查点重新开始
     if (sessionStatus === 'paused') {
       addEvent('phase', '放弃检查点，重新开始执行');
     }
@@ -440,13 +575,12 @@
     isStreaming = true;
     streamBuffer = '';
     currentStreamAgent = '';
+    clearPhaseSections();
     el('#btnSend').disabled = true;
     hideEl('#emptyState');
     updateSessionStatus('running');
 
     addMessage('user', content);
-    var typingMsg = addTypingIndicator();
-    var agentContent = '';
     var hasFinalAnswer = false;
 
     try {
@@ -462,7 +596,6 @@
 
       if (sendResp.status !== 202) {
         var err = await sendResp.json();
-        removeTyping(typingMsg);
         addEvent('error', '请求失败: ' + (err.payload && err.payload.message || '未知错误'));
         isStreaming = false;
         el('#btnSend').disabled = false;
@@ -489,7 +622,7 @@
           if (!data || data === '{}') continue;
           try {
             var msg = JSON.parse(data);
-            handleSSEEvent(msg, typingMsg, function(c) { agentContent += c; hasFinalAnswer = true; });
+            handleSSEEvent(msg, null, function(c) { createFinalResult(c); hasFinalAnswer = true; });
           } catch(parseErr) {}
         }
       }
@@ -497,10 +630,6 @@
       console.error('[sendMessage] error:', e);
       addEvent('error', '连接错误: ' + e.message);
     } finally {
-      removeTyping(typingMsg);
-      if (hasFinalAnswer) {
-        addMessage('agent', agentContent);
-      }
       isStreaming = false;
       currentSSEReader = null;
       el('#btnSend').disabled = false;
@@ -517,54 +646,84 @@
       case 'phase_changed':
         var phase = msg.payload.phase || '';
         var detail = msg.payload.detail || msg.payload.reason || '';
+        var agentName = msg.payload.agent_name || '';
         if (phase === 'compression') {
           addEvent('phase', detail || '上下文压缩');
         } else if (phase === 'decision') {
-          addEvent('phase', (msg.payload.agent_name || 'Agent') + ': ' + (detail || '决策中'));
+          addInlineTool('决策', (agentName || 'Agent') + ': ' + (detail || '决策中'));
         } else if (phase === 'resume') {
           addEvent('phase', '从检查点恢复: ' + (detail || ''));
         } else {
-          var agentName = msg.payload.agent_name || '';
-          var label = agentName ? agentName + ': ' : '';
-          addEvent('phase', label + (detail || phase));
+          // Create or transition phase section
+          completeCurrentPhase();
+          streamBuffer = '';
+          var ps = createPhaseSection(phase, agentName);
+          currentPhaseId = ps.id;
+          isPhaseStreaming = true;
         }
         break;
       case 'tool_call':
-        addEvent('tool', '调用工具: ' + (msg.payload.tool_name || 'unknown'));
+        addInlineTool('调用', (msg.payload.tool_name || 'unknown'));
         break;
       case 'tool_result':
-        addEvent('tool', '工具返回: ' + ((msg.payload.output_preview || '').slice(0, 80)));
+        addInlineTool('返回', (msg.payload.output_preview || '').slice(0, 200));
         break;
       case 'llm_stream_start':
-        // Agent 切换：提交前一个 Agent 的流式输出
-        if (streamBuffer && currentStreamAgent) {
-          addEvent('phase', currentStreamAgent + ' 输出完成');
+        // Agent switch within same phase: insert separator
+        var newAgent = msg.payload.agent_name || '';
+        if (!currentPhaseId) {
+          // Fallback: create default phase section if none exists
+          var fps = createPhaseSection(newAgent || 'Agent', newAgent);
+          currentPhaseId = fps.id;
+          isPhaseStreaming = true;
+        } else if (streamBuffer && currentStreamAgent && newAgent !== currentStreamAgent) {
+          var ps = findPhaseSection(currentPhaseId);
+          if (ps) {
+            var sep = document.createElement('div');
+            sep.style.cssText = 'margin:8px 0;padding:4px 0;border-top:1px dashed var(--border);color:var(--text-muted);font-size:11px;';
+            sep.textContent = '--- ' + newAgent + ' 开始执行 ---';
+            ps.contentEl.appendChild(sep);
+          }
         }
         streamBuffer = '';
-        currentStreamAgent = msg.payload.agent_name || '';
-        if (!typingMsg) {
-          typingMsg = addTypingIndicator();
-        }
-        updateTyping(typingMsg, '**[' + currentStreamAgent + ']**\n');
+        currentStreamAgent = newAgent;
         break;
       case 'llm_stream_chunk':
         streamBuffer += (msg.payload.token || '');
-        if (typingMsg) {
-          var display = currentStreamAgent
-            ? '**[' + currentStreamAgent + ']**\n' + streamBuffer
-            : streamBuffer;
-          updateTyping(typingMsg, display);
+        if (!currentPhaseId) {
+          // Fallback: create default phase section if streaming without one
+          var cpsInit = createPhaseSection(currentStreamAgent || 'Agent', currentStreamAgent);
+          currentPhaseId = cpsInit.id;
+          isPhaseStreaming = true;
         }
+        if (currentPhaseId) {
+          var cps = findPhaseSection(currentPhaseId);
+          if (cps) {
+            cps.content = streamBuffer;
+            cps.contentEl.innerHTML = simpleMarkdown(streamBuffer);
+          }
+        }
+        scrollToBottom();
         break;
       case 'llm_stream_end':
-        // 流式完成，内容保留在 typing 气泡中，等待下一阶段
+        // Content already rendered; keep in phase body
         break;
       case 'agent_message':
-        // 流式场景：忽略 agent_message（内容已通过 llm_stream_chunk 呈现）
+        // Streaming case: content already rendered via llm_stream_chunk
         if (streamBuffer) break;
-        if (msg.payload.content) updateTyping(typingMsg, msg.payload.content);
+        if (msg.payload.content && currentPhaseId) {
+          var aps = findPhaseSection(currentPhaseId);
+          if (aps) {
+            aps.content = msg.payload.content;
+            aps.contentEl.innerHTML = simpleMarkdown(msg.payload.content);
+          }
+        }
         break;
       case 'final_answer':
+        completeCurrentPhase();
+        streamBuffer = '';
+        currentPhaseId = null;
+        isPhaseStreaming = false;
         onFinalAnswer(msg.payload.content || '');
         break;
       case 'execution_complete':
@@ -665,6 +824,7 @@
     addEvent('phase', '正在恢复执行...');
     streamBuffer = '';
     currentStreamAgent = '';
+    clearPhaseSections();
     updateSessionStatus('resuming');
 
     // 取消旧的 SSE 连接（如果有）
@@ -698,7 +858,6 @@
       currentSSEReader = reader;
       var decoder = new TextDecoder();
       var buffer = '';
-      var agentContent = '';
       var hasFinalAnswer = false;
 
       while (true) {
@@ -720,16 +879,9 @@
           if (!data || data === '{}') continue;
           try {
             var msg = JSON.parse(data);
-            if (msg.event === 'final_answer') {
-              agentContent = msg.payload.content || '';
-              hasFinalAnswer = true;
-            }
-            handleSSEEvent(msg, null, function(c) { agentContent = c; hasFinalAnswer = true; });
+            handleSSEEvent(msg, null, function(c) { createFinalResult(c); hasFinalAnswer = true; });
           } catch(parseErr) {}
         }
-      }
-      if (hasFinalAnswer) {
-        addMessage('agent', agentContent);
       }
     } catch(e) {
       console.error('[resumeSession] error:', e);
@@ -787,7 +939,178 @@
 
   function scrollToBottom() {
     var messagesEl = el('#chatMessages');
-    requestAnimationFrame(function() { messagesEl.scrollTop = messagesEl.scrollHeight; });
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      });
+    });
+  }
+
+  // ── Phase section helpers ─────────────────────
+  function findPhaseSection(phaseId) {
+    for (var i = phaseSections.length - 1; i >= 0; i--) {
+      if (phaseSections[i].id === phaseId) return phaseSections[i];
+    }
+    return null;
+  }
+
+  function createPhaseSection(label, agentName) {
+    var container = el('#chatMessages');
+    var phaseId = getPhaseId(label);
+
+    // Re-open completed phase on retry
+    var existing = findPhaseSection(phaseId);
+    if (existing && existing.status === 'completed') {
+      existing.status = 'running';
+      existing.element.classList.remove('collapsed');
+      existing.element.querySelector('.phase-status-icon').className = 'phase-status-icon running';
+      existing.element.querySelector('.phase-status-text').textContent = '执行中...';
+      existing.bodyEl.classList.remove('collapsed');
+      var exhint = existing.element.querySelector('.phase-hint');
+      if (exhint) { exhint.classList.remove('collapsed-phase-hint'); }
+      existing.element.querySelector('.phase-toggle-icon').textContent = '▼';
+      existing.content = '';
+      existing.contentEl.innerHTML = '';
+      return existing;
+    }
+
+    var section = document.createElement('div');
+    section.className = 'phase-section';
+    section.setAttribute('data-phase', phaseId);
+
+    section.innerHTML =
+      '<div class="phase-header" onclick="window._graphAgent_togglePhase(\'' + phaseId + '\')">' +
+        '<span class="phase-status-icon running"></span>' +
+        '<span class="phase-label">' + escHtml(label) + '</span>' +
+        '<span class="phase-agent-name">' + escHtml(agentName || '') + '</span>' +
+        '<span class="phase-status-text">执行中...</span>' +
+        '<span class="phase-hint">点击展开</span>' +
+        '<span class="phase-toggle-icon">▼</span>' +
+      '</div>' +
+      '<div class="phase-body">' +
+        '<div class="phase-content"></div>' +
+      '</div>';
+
+    // Insert before any existing final-result block
+    var finalResult = container.querySelector('.final-result');
+    if (finalResult) {
+      container.insertBefore(section, finalResult);
+    } else {
+      container.appendChild(section);
+    }
+
+    var header = section.querySelector('.phase-header');
+    // Click handled by inline onclick in header HTML
+
+    var phaseSection = {
+      id: phaseId,
+      label: label,
+      agentName: agentName || '',
+      status: 'running',
+      content: '',
+      element: section,
+      bodyEl: section.querySelector('.phase-body'),
+      contentEl: section.querySelector('.phase-content'),
+    };
+    phaseSections.push(phaseSection);
+    scrollToBottom();
+    return phaseSection;
+  }
+
+  function completeCurrentPhase() {
+    if (!currentPhaseId) return;
+    var ps = findPhaseSection(currentPhaseId);
+    if (!ps) return;
+
+    ps.status = 'completed';
+    ps.content = streamBuffer;
+
+    var icon = ps.element.querySelector('.phase-status-icon');
+    if (icon) { icon.className = 'phase-status-icon completed'; }
+
+    var statusText = ps.element.querySelector('.phase-status-text');
+    if (statusText) { statusText.textContent = '已完成'; }
+
+    var hint = ps.element.querySelector('.phase-hint');
+    if (hint) { hint.classList.add('collapsed-phase-hint'); }
+
+    var body = ps.bodyEl;
+    if (body) { body.classList.add('collapsed'); }
+
+    ps.element.classList.add('collapsed');
+
+    var toggle = ps.element.querySelector('.phase-toggle-icon');
+    if (toggle) { toggle.textContent = '▶'; }
+  }
+
+  function togglePhase(phaseId) {
+    var ps = findPhaseSection(phaseId);
+    if (!ps) return;
+    var body = ps.bodyEl;
+    var toggle = ps.element.querySelector('.phase-toggle-icon');
+    var hint = ps.element.querySelector('.phase-hint');
+    if (!body || !toggle) return;
+    var collapsed = body.classList.contains('collapsed');
+    if (collapsed) {
+      body.classList.remove('collapsed');
+      ps.element.classList.remove('collapsed');
+      toggle.textContent = '▼';
+      if (hint) { hint.classList.remove('collapsed-phase-hint'); }
+    } else {
+      body.classList.add('collapsed');
+      ps.element.classList.add('collapsed');
+      toggle.textContent = '▶';
+      if (hint) { hint.classList.add('collapsed-phase-hint'); }
+    }
+  }
+
+  function addInlineTool(type, text) {
+    if (!currentPhaseId) { addEvent('tool', text); return; }
+    var ps = findPhaseSection(currentPhaseId);
+    if (!ps) { addEvent('tool', text); return; }
+    var toolDiv = document.createElement('div');
+    toolDiv.className = 'inline-tool';
+    toolDiv.innerHTML = '<span class="tool-action">' + escHtml(type) + '</span> ' + escHtml(text);
+    ps.contentEl.appendChild(toolDiv);
+    scrollToBottom();
+  }
+
+  function createFinalResult(content) {
+    var container = el('#chatMessages');
+    var existing = container.querySelector('.final-result');
+    if (existing) existing.remove();
+
+    var div = document.createElement('div');
+    div.className = 'final-result';
+    div.innerHTML = '<div class="final-result-header">🤖 最终结果</div>' +
+      '<div class="final-result-body">' + simpleMarkdown(content) + '</div>';
+    container.appendChild(div);
+    scrollToBottom();
+  }
+
+  function clearPhaseSections() {
+    var container = el('#chatMessages');
+    // Convert the existing final-result into a persistent agent message bubble
+    var oldFinal = container.querySelector('.final-result');
+    if (oldFinal) {
+      var bodyEl = oldFinal.querySelector('.final-result-body');
+      if (bodyEl && bodyEl.innerHTML) {
+        var msgDiv = document.createElement('div');
+        msgDiv.className = 'message agent';
+        msgDiv.innerHTML = '<div class="message-avatar">🤖</div>' +
+          '<div class="message-bubble">' + bodyEl.innerHTML + '</div>';
+        container.insertBefore(msgDiv, oldFinal);
+      }
+      oldFinal.remove();
+    }
+    // Remove previous turn's phase sections and inline tools
+    var oldNodes = container.querySelectorAll('.phase-section, .inline-tool');
+    for (var i = 0; i < oldNodes.length; i++) {
+      oldNodes[i].remove();
+    }
+    phaseSections = [];
+    currentPhaseId = null;
+    isPhaseStreaming = false;
   }
 
   // ── UI: Sessions ──────────────────────────────
@@ -841,8 +1164,9 @@
   }
 
   function clearChatMessages() {
+    clearPhaseSections();
     var container = el('#chatMessages');
-    var nodes = container.querySelectorAll('.message, .event-card');
+    var nodes = container.querySelectorAll('.message, .event-card, .phase-section, .final-result, .inline-tool');
     for (var i = 0; i < nodes.length; i++) {
       nodes[i].remove();
     }
@@ -1127,6 +1451,10 @@
 
     el('#userInput').addEventListener('keydown', handleKeyDown);
     el('#userInput').addEventListener('input', function() { autoResize(this); });
+
+    // Phase section click delegation
+    // Toggle function exposed on window for inline onclick
+    window._graphAgent_togglePhase = togglePhase;
 
     console.log('[init] Event listeners bound');
 

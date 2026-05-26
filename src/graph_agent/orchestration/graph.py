@@ -14,7 +14,6 @@ def _init_state(state: OrchestrationState) -> dict:
         "task_plan": None,
         "sub_results": {},
         "plan_approved": False,
-        "result_approved": False,
         "review_retries": 0,
         "max_review_retries": 3,
     }

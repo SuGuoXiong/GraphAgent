@@ -250,11 +250,10 @@ class HTTPSSETransport(ACPTransport):
         实时事件通过 _broadcast 闭包在工作线程中直接推送；
         终端事件（final_answer、execution_complete 等）通过返回值推送。
         """
-        queues_snapshot = list(self._event_queues.items())
 
         def _broadcast(msg: ACPMessage) -> None:
             prefix = f"{session_id}_"
-            for key, q in queues_snapshot:
+            for key, q in list(self._event_queues.items()):
                 if key.startswith(prefix):
                     try:
                         q.put_nowait(msg)
@@ -280,11 +279,10 @@ class HTTPSSETransport(ACPTransport):
 
     async def _resume_and_push(self, session_id: str, request_id: str) -> None:
         """恢复暂停的会话并推送事件到所有关联的 SSE 队列。"""
-        queues_snapshot = list(self._event_queues.items())
 
         def _broadcast(msg: ACPMessage) -> None:
             prefix = f"{session_id}_"
-            for key, q in queues_snapshot:
+            for key, q in list(self._event_queues.items()):
                 if key.startswith(prefix):
                     try:
                         q.put_nowait(msg)
