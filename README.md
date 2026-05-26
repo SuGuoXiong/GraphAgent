@@ -74,7 +74,7 @@ GraphAgent/
 │   └── skills/                #   内置 Skill .md 文件
 ├── config/                    # YAML 配置文件（ACP / Session / RBAC / Audit）
 ├── web_ui/                    # Web 控制台（单页应用）
-├── docs/                      # 设计文档（17 篇）
+├── docs/                      # 设计文档（18 篇）
 ├── tests/                     # 单元测试和集成测试
 ├── mcp_servers.json           # MCP Server 配置
 └── skills/                    # 用户自定义 Skill（可选）
@@ -277,3 +277,4 @@ make integration-tests    # 集成测试（需 ANTHROPIC_API_KEY）
 | 15 | 上下文工程设计 |
 | 16 | 流式响应设计方案 |
 | 17 | Web UI 流式交互增强设计 |
+| 18 | 记忆系统设计 |
