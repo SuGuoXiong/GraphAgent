@@ -45,8 +45,10 @@
     font-size:13px; font-weight:500; transition: all 0.15s;
   }
   .btn:hover { background: #e8ecf1; border-color: #c8cdd6; }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:focus-visible { outline-color: var(--accent-hover); }
   .btn-danger { color: var(--error); }
   .btn-danger:hover { background: #fee2e2; border-color: #fca5a5; }
   .btn-warning { color: var(--warning); border-color: #fde68a; }
@@ -101,7 +103,7 @@
 
   .message-bubble {
     padding:12px 16px; border-radius: var(--radius); font-size:14px; line-height:1.6;
-    word-break:break-word; position:relative;
+    word-break:break-word; overflow-wrap:break-word; position:relative;
   }
   .message.user .message-bubble { background: var(--user-msg); border-bottom-right-radius:4px; }
   .message.agent .message-bubble { background: var(--agent-msg); border-bottom-left-radius:4px; }
@@ -158,16 +160,11 @@
   .empty-state h3 { font-size:18px; font-weight:500; color: var(--text); }
   .empty-state p { font-size:14px; }
 
+  html { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
   ::-webkit-scrollbar { width:6px; }
   ::-webkit-scrollbar-track { background:transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius:3px; }
   ::-webkit-scrollbar-thumb:hover { background: #bcc0c8; }
-
-  .typing-dots { display:flex; gap:4px; padding:4px 0; }
-  .typing-dots span { width:6px; height:6px; background:var(--text-muted); border-radius:50%; animation: bounce 1.2s infinite; }
-  .typing-dots span:nth-child(2) { animation-delay:0.2s; }
-  .typing-dots span:nth-child(3) { animation-delay:0.4s; }
-  @keyframes bounce { 0%,60%,100% { transform:translateY(0); } 30% { transform:translateY(-6px); } }
 
   @media (max-width:768px) {
     .sidebar { width:100%; min-width:100%; position:absolute; z-index:10; height:100%; display:none; }
@@ -332,7 +329,7 @@
       <h1><span class="logo-dot"></span>GraphAgent</h1>
       <button class="btn btn-primary btn-sm" id="btnNewSession" title="新建会话">+ 新建</button>
     </div>
-    <div class="session-list" id="sessionList">
+    <div class="session-list" id="sessionList" role="listbox" aria-label="会话列表">
       <div style="padding:20px;text-align:center;color:var(--text-muted);font-size:13px;" id="sessionListEmpty">
         暂无会话，点击「+ 新建」开始
       </div>
@@ -343,7 +340,7 @@
          style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;
                 background:var(--bg);color:var(--text);font-size:12px;
                 font-family:monospace;box-sizing:border-box;"
-         title="ACP 服务地址">
+         title="ACP 服务地址" aria-label="服务器地址">
       </div>
       <div class="status-indicator">
         <span class="status-dot disconnected" id="statusDot"></span>
@@ -367,7 +364,7 @@
       </div>
     </div>
 
-    <div class="chat-messages" id="chatMessages">
+    <div class="chat-messages" id="chatMessages" role="log" aria-live="polite" aria-label="对话消息">
       <div class="empty-state" id="emptyState">
         <div class="empty-state-icon">&#9729;</div>
         <h3>GraphAgent Console</h3>
@@ -378,7 +375,7 @@
 
     <div class="chat-input-area" id="chatInputArea" style="display:none;">
       <div class="chat-input-wrap">
-        <textarea id="userInput" placeholder="输入消息，Enter 发送，Shift+Enter 换行…" rows="1"></textarea>
+        <textarea id="userInput" placeholder="输入消息，Enter 发送，Shift+Enter 换行…" rows="1" aria-label="消息输入"></textarea>
         <button id="btnSend" title="发送">&#10132;</button>
       </div>
     </div>
@@ -428,20 +425,82 @@
     return '';
   }
 
+  function processInline(text) {
+    // Protect inline code before bold/italic processing
+    var codes = [];
+    text = text.replace(/`([^`]+)`/g, function(_, code) {
+      codes.push('<code>' + code + '</code>');
+      return '\x00IC' + (codes.length - 1) + '\x00';
+    });
+    text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    text = text.replace(/(^|\s)\*([^*\s]+)\*(\s|$)/g, '$1<em>$2</em>$3');
+    text = text.replace(/\x00IC(\d+)\x00/g, function(_, idx) { return codes[parseInt(idx)]; });
+    text = text.replace(/\n/g, '<br>');
+    return text;
+  }
+
   function simpleMarkdown(text) {
     if (!text) return '';
     var html = escHtml(text);
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/(^|\s)\*([^*\s]+)\*(\s|$)/g, '$1<em>$2</em>$3');
-    html = html.replace(/^&gt; (.*)$/gm, '<blockquote>$1</blockquote>');
-    html = html.replace(/^[\-\*] (.*)$/gm, '<li>$1</li>');
-    var hasList = false;
-    html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, function(m) { hasList = true; return '<ul>' + m + '</ul>'; });
-    html = html.replace(/\n\n/g, '</p><p>');
-    html = html.replace(/\n/g, '<br>');
-    return '<p>' + html + '</p>';
+
+    // Extract and protect code blocks
+    var codeBlocks = [];
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
+      codeBlocks.push('<pre><code>' + code + '</code></pre>');
+      return '\x00CODE' + (codeBlocks.length - 1) + '\x00';
+    });
+
+    var blocks = html.split(/\n\n+/);
+    var result = [];
+    var pendingListItems = [];
+
+    function flushList() {
+      if (pendingListItems.length) {
+        result.push('<ul>' + pendingListItems.join('') + '</ul>');
+        pendingListItems = [];
+      }
+    }
+
+    for (var i = 0; i < blocks.length; i++) {
+      var block = blocks[i].trim();
+      if (!block) continue;
+
+      // Restore code blocks
+      block = block.replace(/\x00CODE(\d+)\x00/g, function(_, idx) {
+        return codeBlocks[parseInt(idx)];
+      });
+
+      if (block.indexOf('<pre>') === 0) { flushList(); result.push(block); continue; }
+
+      // Blockquote lines
+      if (block.indexOf('&gt; ') === 0) {
+        flushList();
+        var lines = block.split('\n');
+        var bqContent = '';
+        for (var j = 0; j < lines.length; j++) {
+          if (lines[j].indexOf('&gt; ') === 0) bqContent += (bqContent ? '\n' : '') + lines[j].slice(5);
+        }
+        result.push('<blockquote>' + processInline(bqContent) + '</blockquote>');
+        continue;
+      }
+
+      // List items
+      if (/^[\-\*] /.test(block)) {
+        var liLines = block.split('\n');
+        for (var k = 0; k < liLines.length; k++) {
+          if (/^[\-\*] /.test(liLines[k])) {
+            pendingListItems.push('<li>' + processInline(liLines[k].slice(2)) + '</li>');
+          }
+        }
+        continue;
+      }
+
+      flushList();
+      result.push('<p>' + processInline(block) + '</p>');
+    }
+
+    flushList();
+    return result.join('\n');
   }
 
   // ── State ────────────────────────────────────
@@ -455,7 +514,7 @@
   var currentStreamAgent = '';   // 当前流式来源 Agent 名称
   var phaseSections = [];        // 当前轮次所有阶段容器
   var currentPhaseId = null;     // 当前正在运行的阶段 ID
-  var isPhaseStreaming = false;  // 当前阶段是否正在流式输出
+  var streamRenderPending = false;
 
   var PHASE_ID_MAP = {
     '意图分析': 'intent_analysis',
@@ -479,14 +538,14 @@
 
   // ── API calls ────────────────────────────────
   async function apiCall(payload) {
-    console.log('[API] request:', payload.event, payload);
+    console.log('[API] request:', payload.event);
     var resp = await fetch(BASE + '/acp/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     var data = await resp.json();
-    console.log('[API] response:', data.event, data);
+    console.log('[API] response:', data.event);
     return data;
   }
 
@@ -512,7 +571,6 @@
         version: '1.0', type: 'request', event: 'create_session',
         id: randId(), timestamp: new Date().toISOString(), payload: { config: null },
       });
-      console.log('[createSession] reply:', reply);
       if (reply.event === 'session_created') {
         var sid = reply.payload.session_id;
         console.log('[createSession] session created:', sid);
@@ -558,13 +616,45 @@
   }
 
   // ── SSE streaming ────────────────────────────
+  async function readSSEStream(onFinalAnswer) {
+    if (currentSSEReader) {
+      try { currentSSEReader.cancel(); } catch(e) {}
+      currentSSEReader = null;
+    }
+    var sseResp = await fetch(BASE + '/acp/events?session_id=' + encodeURIComponent(activeSessionId));
+    var reader = sseResp.body.getReader();
+    currentSSEReader = reader;
+    var decoder = new TextDecoder();
+    var buffer = '';
+
+    while (true) {
+      var readResult;
+      try {
+        readResult = await reader.read();
+      } catch(e) {
+        break;
+      }
+      if (readResult.done) break;
+      buffer += decoder.decode(readResult.value, { stream: true });
+      var lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (line.indexOf('data:') !== 0) continue;
+        var data = line.slice(5).trim();
+        if (!data || data === '{}') continue;
+        try {
+          var msg = JSON.parse(data);
+          handleSSEEvent(msg, onFinalAnswer);
+        } catch(parseErr) { console.warn('[SSE] JSON parse error:', parseErr, data.slice(0, 200)); }
+      }
+    }
+  }
+
   async function sendMessage() {
     if (isStreaming || !activeSessionId) return;
-    if (sessionStatus === 'paused' || sessionStatus === 'running' || sessionStatus === 'resuming' || sessionStatus === 'awaiting_user') return;
-
-    if (sessionStatus === 'paused') {
-      addEvent('phase', '放弃检查点，重新开始执行');
-    }
+    if (sessionStatus === 'running' || sessionStatus === 'resuming' || sessionStatus === 'awaiting_user') return;
 
     var input = el('#userInput');
     var content = input.value.trim();
@@ -581,7 +671,6 @@
     updateSessionStatus('running');
 
     addMessage('user', content);
-    var hasFinalAnswer = false;
 
     try {
       var sendResp = await fetch(BASE + '/acp/message', {
@@ -602,30 +691,7 @@
         return;
       }
 
-      var sseResp = await fetch(BASE + '/acp/events?session_id=' + encodeURIComponent(activeSessionId));
-      var reader = sseResp.body.getReader();
-      currentSSEReader = reader;
-      var decoder = new TextDecoder();
-      var buffer = '';
-
-      while (true) {
-        var readResult = await reader.read();
-        if (readResult.done) break;
-        buffer += decoder.decode(readResult.value, { stream: true });
-        var lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (var i = 0; i < lines.length; i++) {
-          var line = lines[i];
-          if (line.indexOf('data:') !== 0) continue;
-          var data = line.slice(5).trim();
-          if (!data || data === '{}') continue;
-          try {
-            var msg = JSON.parse(data);
-            handleSSEEvent(msg, null, function(c) { createFinalResult(c); hasFinalAnswer = true; });
-          } catch(parseErr) {}
-        }
-      }
+      await readSSEStream(function(c) { createFinalResult(c); });
     } catch(e) {
       console.error('[sendMessage] error:', e);
       addEvent('error', '连接错误: ' + e.message);
@@ -641,7 +707,7 @@
     }
   }
 
-  function handleSSEEvent(msg, typingMsg, onFinalAnswer) {
+  function handleSSEEvent(msg, onFinalAnswer) {
     switch (msg.event) {
       case 'phase_changed':
         var phase = msg.payload.phase || '';
@@ -659,7 +725,7 @@
           streamBuffer = '';
           var ps = createPhaseSection(phase, agentName);
           currentPhaseId = ps.id;
-          isPhaseStreaming = true;
+
         }
         break;
       case 'tool_call':
@@ -675,7 +741,7 @@
           // Fallback: create default phase section if none exists
           var fps = createPhaseSection(newAgent || 'Agent', newAgent);
           currentPhaseId = fps.id;
-          isPhaseStreaming = true;
+
         } else if (streamBuffer && currentStreamAgent && newAgent !== currentStreamAgent) {
           var ps = findPhaseSection(currentPhaseId);
           if (ps) {
@@ -689,19 +755,25 @@
         currentStreamAgent = newAgent;
         break;
       case 'llm_stream_chunk':
-        streamBuffer += (msg.payload.token || '');
+        if (streamBuffer.length < 50000) {
+          streamBuffer += (msg.payload.token || '');
+        }
         if (!currentPhaseId) {
-          // Fallback: create default phase section if streaming without one
           var cpsInit = createPhaseSection(currentStreamAgent || 'Agent', currentStreamAgent);
           currentPhaseId = cpsInit.id;
-          isPhaseStreaming = true;
         }
-        if (currentPhaseId) {
-          var cps = findPhaseSection(currentPhaseId);
-          if (cps) {
-            cps.content = streamBuffer;
-            cps.contentEl.innerHTML = simpleMarkdown(streamBuffer);
-          }
+        if (currentPhaseId && !streamRenderPending) {
+          streamRenderPending = true;
+          var phaseId = currentPhaseId;
+          var buf = streamBuffer;
+          requestAnimationFrame(function() {
+            streamRenderPending = false;
+            var cps = findPhaseSection(phaseId);
+            if (cps) {
+              cps.content = buf;
+              cps.contentEl.innerHTML = simpleMarkdown(buf);
+            }
+          });
         }
         scrollToBottom();
         break;
@@ -723,7 +795,7 @@
         completeCurrentPhase();
         streamBuffer = '';
         currentPhaseId = null;
-        isPhaseStreaming = false;
+
         onFinalAnswer(msg.payload.content || '');
         break;
       case 'execution_complete':
@@ -827,12 +899,6 @@
     clearPhaseSections();
     updateSessionStatus('resuming');
 
-    // 取消旧的 SSE 连接（如果有）
-    if (currentSSEReader) {
-      try { currentSSEReader.cancel(); } catch(e) {}
-      currentSSEReader = null;
-    }
-
     try {
       var resp = await fetch(BASE + '/acp/message', {
         method: 'POST',
@@ -852,37 +918,7 @@
         return;
       }
 
-      // 重新建立 SSE 连接
-      var sseResp = await fetch(BASE + '/acp/events?session_id=' + encodeURIComponent(activeSessionId));
-      var reader = sseResp.body.getReader();
-      currentSSEReader = reader;
-      var decoder = new TextDecoder();
-      var buffer = '';
-      var hasFinalAnswer = false;
-
-      while (true) {
-        var readResult;
-        try {
-          readResult = await reader.read();
-        } catch(e) {
-          break;
-        }
-        if (readResult.done) break;
-        buffer += decoder.decode(readResult.value, { stream: true });
-        var lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (var i = 0; i < lines.length; i++) {
-          var line = lines[i];
-          if (line.indexOf('data:') !== 0) continue;
-          var data = line.slice(5).trim();
-          if (!data || data === '{}') continue;
-          try {
-            var msg = JSON.parse(data);
-            handleSSEEvent(msg, null, function(c) { createFinalResult(c); hasFinalAnswer = true; });
-          } catch(parseErr) {}
-        }
-      }
+      await readSSEStream(function(c) { createFinalResult(c); });
     } catch(e) {
       console.error('[resumeSession] error:', e);
       addEvent('error', '恢复连接错误: ' + e.message);
@@ -905,29 +941,6 @@
     scrollToBottom();
   }
 
-  function addTypingIndicator() {
-    var container = el('#chatMessages');
-    var div = document.createElement('div');
-    div.className = 'message agent';
-    div.id = 'typing-' + Date.now();
-    div.innerHTML = '<div class="message-avatar">🤖</div>' +
-      '<div class="message-bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>';
-    container.appendChild(div);
-    scrollToBottom();
-    return div;
-  }
-
-  function updateTyping(msgEl, text) {
-    if (!msgEl) return;
-    var bubble = msgEl.querySelector('.message-bubble');
-    if (bubble) bubble.innerHTML = simpleMarkdown(text);
-    scrollToBottom();
-  }
-
-  function removeTyping(msgEl) {
-    if (msgEl && msgEl.parentNode) msgEl.remove();
-  }
-
   function addEvent(type, text) {
     var container = el('#chatMessages');
     var div = document.createElement('div');
@@ -940,9 +953,7 @@
   function scrollToBottom() {
     var messagesEl = el('#chatMessages');
     requestAnimationFrame(function() {
-      requestAnimationFrame(function() {
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      });
+      messagesEl.scrollTop = messagesEl.scrollHeight;
     });
   }
 
@@ -979,7 +990,7 @@
     section.setAttribute('data-phase', phaseId);
 
     section.innerHTML =
-      '<div class="phase-header" onclick="window._graphAgent_togglePhase(\'' + phaseId + '\')">' +
+      '<div class="phase-header" data-phase-id="' + phaseId + '">' +
         '<span class="phase-status-icon running"></span>' +
         '<span class="phase-label">' + escHtml(label) + '</span>' +
         '<span class="phase-agent-name">' + escHtml(agentName || '') + '</span>' +
@@ -998,9 +1009,6 @@
     } else {
       container.appendChild(section);
     }
-
-    var header = section.querySelector('.phase-header');
-    // Click handled by inline onclick in header HTML
 
     var phaseSection = {
       id: phaseId,
@@ -1024,6 +1032,8 @@
 
     ps.status = 'completed';
     ps.content = streamBuffer;
+    // Final render in case rAF debounce hasn't fired yet
+    ps.contentEl.innerHTML = simpleMarkdown(streamBuffer);
 
     var icon = ps.element.querySelector('.phase-status-icon');
     if (icon) { icon.className = 'phase-status-icon completed'; }
@@ -1110,7 +1120,7 @@
     }
     phaseSections = [];
     currentPhaseId = null;
-    isPhaseStreaming = false;
+    streamRenderPending = false;
   }
 
   // ── UI: Sessions ──────────────────────────────
@@ -1138,35 +1148,13 @@
       '</div>';
     }
     list.innerHTML = html;
-    bindSessionEvents();
   }
 
-  function bindSessionEvents() {
-    var items = document.querySelectorAll('.session-item');
-    for (var i = 0; i < items.length; i++) {
-      (function(item) {
-        item.addEventListener('click', function(e) {
-          var sid = item.getAttribute('data-sid');
-          if (sid) switchSession(sid);
-        });
-      })(items[i]);
-    }
-    var deleteBtns = document.querySelectorAll('[data-delete]');
-    for (var j = 0; j < deleteBtns.length; j++) {
-      (function(btn) {
-        btn.addEventListener('click', function(e) {
-          e.stopPropagation();
-          var sid = btn.getAttribute('data-delete');
-          if (sid) deleteSession(sid);
-        });
-      })(deleteBtns[j]);
-    }
-  }
 
   function clearChatMessages() {
     clearPhaseSections();
     var container = el('#chatMessages');
-    var nodes = container.querySelectorAll('.message, .event-card, .phase-section, .final-result, .inline-tool');
+    var nodes = container.querySelectorAll('.message, .event-card');
     for (var i = 0; i < nodes.length; i++) {
       nodes[i].remove();
     }
@@ -1412,6 +1400,7 @@
         addEvent('error', '回复失败: ' + (data.payload && data.payload.message || '未知错误'));
         return false;
       }
+      updateSessionStatus('running');
       return true;
     } catch(e) {
       console.error('[submitReply] error:', e);
@@ -1450,11 +1439,39 @@
     el('#btnResume').addEventListener('click', resumeSession);
 
     el('#userInput').addEventListener('keydown', handleKeyDown);
-    el('#userInput').addEventListener('input', function() { autoResize(this); });
+    var resizePending = false;
+    el('#userInput').addEventListener('input', function() {
+      if (!resizePending) {
+        resizePending = true;
+        var self = this;
+        requestAnimationFrame(function() { autoResize(self); resizePending = false; });
+      }
+    });
 
-    // Phase section click delegation
-    // Toggle function exposed on window for inline onclick
-    window._graphAgent_togglePhase = togglePhase;
+    // Phase section toggle via event delegation
+    el('#chatMessages').addEventListener('click', function(e) {
+      var header = e.target.closest('.phase-header');
+      if (header) {
+        var phaseId = header.getAttribute('data-phase-id');
+        if (phaseId) togglePhase(phaseId);
+      }
+    });
+
+    // Session list via event delegation
+    el('#sessionList').addEventListener('click', function(e) {
+      var deleteBtn = e.target.closest('[data-delete]');
+      if (deleteBtn) {
+        e.stopPropagation();
+        var sid = deleteBtn.getAttribute('data-delete');
+        if (sid) deleteSession(sid);
+        return;
+      }
+      var item = e.target.closest('.session-item');
+      if (item) {
+        var sid = item.getAttribute('data-sid');
+        if (sid) switchSession(sid);
+      }
+    });
 
     console.log('[init] Event listeners bound');
 
