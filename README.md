@@ -1,6 +1,6 @@
 # GraphAgent
 
-基于 LangGraph 的通用多 Agent 编排框架，提供三层编排架构、Skill 系统、MCP 协议支持、人机协作、会话管理及 ACP 通信协议。
+基于 LangGraph 的通用多 Agent 编排框架，提供三层编排架构、Skill 系统、AI Coding 自动编程、MCP 协议支持、人机协作、会话管理及 ACP 通信协议。
 
 ## 我对 AI Agent 的思考
 
@@ -22,9 +22,10 @@ GraphAgent 正是为解决这些问题而设计的——不是又一个 ReAct �
 | 模块 | 说明 |
 |------|------|
 | **三层编排** | GuardAgent（意图分析/方案审核）→ PlanAgent（任务分解/派发/汇总）→ SubAgent（ReAct 循环，支持 DAG 并行调度） |
+| **AI Coding** | 内置编程助手 Skill，TDD 驱动——从需求澄清、方案设计、用例设计到逐子任务代码实现与测试验证的完整开发生命周期 |
 | **Skill 系统** | 文档驱动（SKILL.md）的技能定义，内置 Skill 在 `prompts/skills/`，用户自定义 Skill 在 `skills/` |
 | **MCP 协议** | 支持 stdio 和 Streamable HTTP 两种传输，通过 `mcp_servers.json` 配置，工具自动发现并注册 |
-| **工具系统** | `@tool` 装饰器注册，ToolCenter 自动发现，内置文件/计算/命令/网页抓取/JSON/时间查询等工具 |
+| **工具系统** | `@tool` 装饰器注册，ToolCenter 自动发现，内置文件/计算/命令/网页抓取/JSON/时间查询 + 代码搜索/读写/执行工具 |
 | **Hook 机制** | 四个检查点（before/after_tool_call、before/after_llm_call），三种类型（MODIFY/CONTROL/OBSERVE），优先级排序 |
 | **人机协作** | 支持中断暂停/恢复、ask_user 工具交互、方案审核与用户确认 |
 | **会话管理** | 多轮对话历史、JSON 持久化、两级压缩（优先级裁剪 + LLM 摘要） |
@@ -66,7 +67,7 @@ GraphAgent/
 │   ├── security/              #   安全模块（RBAC 鉴权 + 审计日志）
 │   ├── session/               #   会话管理（历史/持久化/压缩/Token 估算）
 │   ├── skill/                 #   Skill 系统（解析/加载/注册）
-│   ├── tools/                 #   内置工具（文件/计算/命令/网页/JSON/时间/ask_user）
+│   ├── tools/                 #   内置工具（文件/计算/命令/网页/JSON/时间/ask_user/代码读写/搜索/执行）
 │   └── tracer/                #   可观测性（终端输出/事件追踪）
 ├── prompts/                   # 提示词模板和内置 Skill 定义
 │   ├── guard/                 #   GuardAgent 提示词
@@ -74,7 +75,7 @@ GraphAgent/
 │   └── skills/                #   内置 Skill .md 文件
 ├── config/                    # YAML 配置文件（ACP / Session / RBAC / Audit）
 ├── web_ui/                    # Web 控制台（单页应用）
-├── docs/                      # 设计文档（18 篇）
+├── docs/                      # 设计文档（18 篇核心 + 3 篇应用设计）
 ├── tests/                     # 单元测试和集成测试
 ├── mcp_servers.json           # MCP Server 配置
 └── skills/                    # 用户自定义 Skill（可选）
@@ -182,7 +183,7 @@ skills/
 
 ### 多阶段编排对话
 
-以下展示一次典型的多阶段编排交互——用户提问"帮我分析这个项目的代码结构，看看各模块的职责和依赖关系"：
+以下展示一次典型的多阶段编排交互——用户提问"你都有哪些功能"：
 
 ![普通对话演示](./demo/普通对话.gif)
 
@@ -195,6 +196,14 @@ skills/
 ![Skill与MCP集成演示](./demo/集成skill和mcp.gif)
 
 > 💡 上图中 Agent 自动加载了 `mcp_servers.json` 中配置的 GitHub MCP Server 工具，以及 `skills/` 目录下的自定义 Skill，在任务执行阶段按需调度。MCP 工具支持风险等级覆盖（`risk_overrides`），低风险工具直接执行，高风险工具触发用户授权。自定义 Skill 通过 `SKILL.md` 文档驱动，Agent 根据任务需求自动匹配最适合的 Skill。
+
+### AI Coding 自动编程
+
+以下展示 AI Coding Skill 的一次完整开发过程——用户只需说"帮我写一个 hello.py"，Agent 自动完成需求理解、方案设计、代码创建和运行验证：
+
+![AI Coding 演示](./demo/ai%20coding.gif)
+
+> 💡 AI Coding 是 GraphAgent 内置的编程助手 Skill，具备完整的软件开发能力：需求澄清 → 方案与用例设计 → 任务分解 → TDD 代码实现（RED → GREEN → REFACTOR）→ 测试验证 → 结果交付。支持简单任务的快速路径和复杂任务的多子任务编排。配备 6 个专用工具：`glob_file`（文件搜索）、`grep_context`（代码检索）、`read_code`（智能边界扩展读取）、`update_code`（精准替换）、`write_code`（分段写入）、`execute_command`（安全测试执行）。所有文件操作工具均内置路径安全校验，命令执行工具包含危险操作过滤。
 
 ---
 
@@ -297,3 +306,7 @@ make integration-tests    # 集成测试（需 ANTHROPIC_API_KEY）
 | 16 | 流式响应设计方案 |
 | 17 | Web UI 流式交互增强设计 |
 | 18 | 记忆系统设计 |
+| — | — |
+| App | AI Coding 功能设计 |
+| App | GitHub MCP 服务器设计 |
+| App | 文本转 PPT 功能设计 |
