@@ -16,6 +16,11 @@ policies:
     resource: "*"
     effect: deny
     description: "除 data_engineer 外禁止操作生产数据库 MCP 工具"
+  - subject: "*"
+    action: "execute_command"
+    resource: "*"
+    effect: allow
+    description: "禁止执行 rm 系列危险命令"
 
   # ─── 敏感文件策略 ───
 

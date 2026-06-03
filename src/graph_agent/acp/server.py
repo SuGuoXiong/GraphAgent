@@ -486,6 +486,11 @@ class ACPServer:
                 if rbac_token:
                     rbac_token["approved"] = "批准" in user_reply
                     rbac_token["denied"] = "拒绝" in user_reply
+                    # 将已批准的工具名注入 RBAC Hook 的预授权集合，
+                    # 防止恢复执行后同一工具被反复拦截
+                    if rbac_token["approved"]:
+                        from graph_agent.hook.builtin.rbac_hook import _approved_tools
+                        _approved_tools.add(rbac_token.get("tool_name", ""))
 
             events.append(ACPMessage.event(PushEvent.PHASE_CHANGED, {
                 "phase": "resume",

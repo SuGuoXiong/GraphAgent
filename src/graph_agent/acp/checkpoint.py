@@ -137,6 +137,21 @@ def serialize_checkpoint(state: dict, session_id: str, reason: str) -> dict:
     else:
         phase_str = str(phase_val) if phase_val else ""
 
+    # ── RBAC 审批令牌序列化 ─────────────────────────
+    rbac_token = state.get("_rbac_pending_escalation")
+    serialized_rbac_token = None
+    if rbac_token:
+        serialized_rbac_token = {
+            "id": rbac_token.get("id", ""),
+            "subject": rbac_token.get("subject", ""),
+            "tool_name": rbac_token.get("tool_name", ""),
+            "resource": rbac_token.get("resource", ""),
+            "created_at": rbac_token.get("created_at", 0),
+            "expires_at": rbac_token.get("expires_at", 0),
+            "approved": rbac_token.get("approved", False),
+            "denied": rbac_token.get("denied", False),
+        }
+
     checkpoint = {
         "phase": phase_str,
         "intent": state.get("intent", ""),
@@ -149,6 +164,7 @@ def serialize_checkpoint(state: dict, session_id: str, reason: str) -> dict:
         "ga_messages": serialized_ga,
         "_ask_user_tool_id": ask_user_tool_id,
         "_subagent_messages": serialized_subagent_msgs,
+        "_rbac_pending_escalation": serialized_rbac_token,
         "session_id": session_id,
         "created_at": _iso_now(),
         "reason": reason,
@@ -227,6 +243,12 @@ def deserialize_checkpoint(checkpoint: dict) -> dict:
         except Exception:
             pass
 
+    # ── RBAC 审批令牌恢复 ────────────────────────────
+    serialized_rbac_token = checkpoint.get("_rbac_pending_escalation")
+    rbac_token = None
+    if serialized_rbac_token:
+        rbac_token = dict(serialized_rbac_token)
+
     return {
         "phase": phase,
         "intent": checkpoint.get("intent", ""),
@@ -239,6 +261,7 @@ def deserialize_checkpoint(checkpoint: dict) -> dict:
         "ga_messages": ga_msgs,
         "_ask_user_tool_id": checkpoint.get("_ask_user_tool_id", ""),
         "_subagent_messages": subagent_msgs,
+        "_rbac_pending_escalation": rbac_token,
     }
 
 
