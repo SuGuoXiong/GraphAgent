@@ -1,19 +1,19 @@
-"""记忆存储层 —— 文件读写、index.json 管理、去重合并。
+"""记忆存储层（v2 重构版）—— 每日 Markdown 文件读写。
 
 目录结构:
     data/memory/
-    ├── user_profile.md
-    ├── topic/
-    │   └── {slug}.md
-    ├── index.json
-    └── archive/
+    ├── user/{date}.md
+    ├── project/{date}.md
+    ├── session/{date}.md
+    ├── archive/{date}.md
+    └── memory.db
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
+import tempfile
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,13 +21,14 @@ from typing import TYPE_CHECKING
 import yaml
 
 from graph_agent.memory.memory_types import (
-    UserProfile,
-    UserPreferenceItem,
-    TopicMemory,
-    TopicMemoryEntry,
-    TopicIndexEntry,
-    MemoryIndex,
+    MemoryRecord,
+    MemoryType,
+    MemoryScope,
+    MemoryStatus,
     _now,
+    _today_str,
+    generate_memory_id,
+    extract_date_from_id,
 )
 
 if TYPE_CHECKING:
@@ -39,328 +40,380 @@ def _get_base_dir() -> Path:
 
 
 class MemoryStore:
-    """记忆文件存储 —— 负责 markdown + JSON 文件的读写和索引维护。"""
+    """每日 Markdown 文件存储层。
+
+    职责:
+    - 按 scope/date 组织 Markdown 文件
+    - 文件级锁（防并发竞态）
+    - atomic_write（防崩溃损坏）
+    - 正文缩进保护（防 ## / --- 误解析）
+    - 记忆记录的增删改查
+    """
 
     def __init__(self, base_dir: str | Path | None = None):
         self._base = Path(base_dir) if base_dir else _get_base_dir()
-        self._lock = threading.Lock()
+        self._file_locks: dict[str, threading.Lock] = {}
+        self._locks_guard = threading.Lock()
 
     @property
     def base_dir(self) -> Path:
         return self._base
 
+    # ── 目录管理 ──────────────────────────────────────────
+
     def ensure_dirs(self) -> None:
         """确保存储目录结构存在。"""
-        (self._base / "topic").mkdir(parents=True, exist_ok=True)
-        (self._base / "archive").mkdir(parents=True, exist_ok=True)
+        for subdir in ("user", "project", "session", "archive"):
+            (self._base / subdir).mkdir(parents=True, exist_ok=True)
 
-    # ── User Profile ──────────────────────────────────────
+    def _get_file_path(self, scope: str, date_str: str) -> Path:
+        """获取每日文件完整路径。"""
+        return self._base / scope / f"{date_str}.md"
 
-    def load_profile(self) -> UserProfile:
-        """加载用户画像，不存在则返回空。"""
-        path = self._base / "user_profile.md"
-        if not path.exists():
-            return UserProfile()
-        frontmatter, body = _parse_markdown_with_frontmatter(path.read_text("utf-8"))
-        prefs = self._parse_profile_body(body)
-        return UserProfile(
-            preferences=prefs,
-            updated_at=frontmatter.get("updated_at", ""),
-            total_extractions=frontmatter.get("total_extractions", 0),
-        )
+    # ── 文件级锁 ──────────────────────────────────────────
 
-    def save_profile(self, profile: UserProfile) -> None:
-        """保存用户画像到文件。"""
-        with self._lock:
-            self.ensure_dirs()
-            profile.updated_at = _now()
-            profile.total_extractions += 1
+    def _acquire_lock(self, file_path: str) -> threading.Lock:
+        """获取文件级锁（线程安全地创建/获取 Lock）。"""
+        with self._locks_guard:
+            if file_path not in self._file_locks:
+                self._file_locks[file_path] = threading.Lock()
+            return self._file_locks[file_path]
 
-            parts = ["---"]
-            parts.append(f"updated_at: \"{profile.updated_at}\"")
-            parts.append(f"total_extractions: {profile.total_extractions}")
-            parts.append("---")
-            parts.append("")
-            parts.append("# 用户画像")
-            parts.append("")
-            for category, items in profile.preferences.items():
-                parts.append(f"## {category}")
-                for item in items:
-                    stale_marker = "⚠️ " if item.stale else ""
-                    parts.append(f"- {stale_marker}{item.content}")
-                parts.append("")
+    # ── Markdown 解析与序列化 ──────────────────────────────
 
-            (self._base / "user_profile.md").write_text(
-                "\n".join(parts), "utf-8"
-            )
-
-    def _parse_profile_body(self, body: str) -> dict[str, list[UserPreferenceItem]]:
-        """解析用户画像正文，提取按类别分组的偏好列表。"""
-        prefs: dict[str, list[UserPreferenceItem]] = {}
-        current_category = ""
-
-        for line in body.split("\n"):
-            h2 = re.match(r"^##\s+(.+)", line)
-            if h2:
-                current_category = h2.group(1).strip()
-                if current_category not in prefs:
-                    prefs[current_category] = []
-                continue
-
-            item_match = re.match(r"^[-*]\s+(?:⚠️\s*)?(.+)", line)
-            if item_match and current_category:
-                content = item_match.group(1).strip()
-                stale = "⚠️" in line
-                if content:
-                    prefs[current_category].append(
-                        UserPreferenceItem(
-                            category=current_category,
-                            content=content,
-                            stale=stale,
-                            confidence=0.5 if stale else 1.0,
-                        )
-                    )
-
-        return prefs
-
-    # ── Topic Memory ──────────────────────────────────────
-
-    def load_topic(self, slug: str) -> TopicMemory | None:
-        """加载单个主题记忆文件。"""
-        path = self._base / "topic" / f"{slug}.md"
-        if not path.exists():
-            return None
-        frontmatter, body = _parse_markdown_with_frontmatter(path.read_text("utf-8"))
-        entries = self._parse_topic_entries(body)
-        return TopicMemory(
-            slug=slug,
-            title=frontmatter.get("title", slug),
-            keywords=frontmatter.get("keywords", []),
-            summary=frontmatter.get("summary", ""),
-            entries=entries,
-            created_at=frontmatter.get("created_at", ""),
-            updated_at=frontmatter.get("updated_at", ""),
-            last_accessed_at=frontmatter.get("last_accessed_at", ""),
-        )
-
-    def save_topic(self, topic: TopicMemory) -> None:
-        """保存主题记忆到文件。"""
-        with self._lock:
-            self.ensure_dirs()
-            topic.updated_at = _now()
-
-            parts = ["---"]
-            parts.append(f"topic: {topic.slug}")
-            parts.append(f"title: \"{topic.title}\"")
-            keywords_str = json.dumps(topic.keywords, ensure_ascii=False)
-            parts.append(f"keywords: {keywords_str}")
-            parts.append(f"summary: \"{topic.summary}\"")
-            parts.append(f"created_at: \"{topic.created_at}\"")
-            parts.append(f"updated_at: \"{topic.updated_at}\"")
-            parts.append(f"last_accessed_at: \"{topic.last_accessed_at}\"")
-            parts.append(f"entry_count: {len(topic.entries)}")
-            parts.append("---")
-            parts.append("")
-            parts.append(f"# {topic.title}")
-            parts.append("")
-            parts.append("## 记忆条目")
-            parts.append("")
-
-            for entry in topic.entries:
-                parts.append(f"### {entry.date} — {entry.title}")
-                parts.append(f"- **任务**: {entry.task}")
-                parts.append(f"- **方案**: {entry.approach}")
-                parts.append(f"- **经验**: ")
-                for line in entry.lessons.split("\n"):
-                    parts.append(f"  {line}")
-                if entry.user_feedback:
-                    parts.append(f"- **用户反馈**: {entry.user_feedback}")
-                if entry.user_adjustment:
-                    parts.append(f"- **用户调整**: {entry.user_adjustment}")
-                parts.append("")
-
-            (self._base / "topic" / f"{topic.slug}.md").write_text(
-                "\n".join(parts), "utf-8"
-            )
-
-    def _parse_topic_entries(self, body: str) -> list[TopicMemoryEntry]:
-        """解析主题记忆正文，提取记忆条目列表。"""
-        entries: list[TopicMemoryEntry] = []
-        current_entry: dict[str, str] = {}
-        current_field = ""
-
-        for line in body.split("\n"):
-            h3 = re.match(r"^###\s+(.+)", line)
-            if h3:
-                if current_entry and current_entry.get("title"):
-                    entries.append(TopicMemoryEntry(
-                        title=current_entry.get("title", ""),
-                        task=current_entry.get("task", ""),
-                        approach=current_entry.get("approach", ""),
-                        lessons=current_entry.get("lessons", ""),
-                        user_feedback=current_entry.get("user_feedback", ""),
-                        user_adjustment=current_entry.get("user_adjustment", ""),
-                        date=current_entry.get("date", ""),
-                    ))
-                header = h3.group(1).strip()
-                if " — " in header:
-                    date, title = header.split(" — ", 1)
-                    current_entry = {"date": date, "title": title}
-                else:
-                    current_entry = {"title": header}
-                current_field = ""
-                continue
-
-            field_match = re.match(r"^[-*]\s+\*\*(.+?)\*\*:\s*(.*)", line)
-            if field_match:
-                current_field = field_match.group(1).strip()
-                value = field_match.group(2).strip()
-                key_map = {"任务": "task", "方案": "approach", "经验": "lessons",
-                           "用户反馈": "user_feedback", "用户调整": "user_adjustment"}
-                mapped = key_map.get(current_field, current_field)
-                current_entry[mapped] = value
-                continue
-
-            # Continuation lines for multi-line fields
-            if current_field and current_entry and line.strip() and not line.startswith("#"):
-                mapped = {"任务": "task", "方案": "approach", "经验": "lessons",
-                         "用户反馈": "user_feedback", "用户调整": "user_adjustment"}
-                key = mapped.get(current_field, current_field)
-                existing = current_entry.get(key, "")
-                if existing:
-                    current_entry[key] = existing + "\n" + line.strip()
-
-        if current_entry and current_entry.get("title"):
-            entries.append(TopicMemoryEntry(
-                title=current_entry.get("title", ""),
-                task=current_entry.get("task", ""),
-                approach=current_entry.get("approach", ""),
-                lessons=current_entry.get("lessons", ""),
-                user_feedback=current_entry.get("user_feedback", ""),
-                user_adjustment=current_entry.get("user_adjustment", ""),
-                date=current_entry.get("date", ""),
-            ))
-
-        return entries
-
-    def archive_topic_entry(self, slug: str, entry_index: int) -> None:
-        """将指定条目归档（根据时间衰减策略移除过期条目时调用）。"""
-        topic = self.load_topic(slug)
-        if not topic or entry_index >= len(topic.entries):
-            return
-        removed = topic.entries.pop(entry_index)
-        topic.updated_at = _now()
-        self.save_topic(topic)
-
-        # 写入归档文件
-        archive_path = self._base / "archive" / f"{slug}_{removed.date}.md"
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
-        archive_path.write_text(
-            f"# [归档] {removed.title}\n"
-            f"- 日期: {removed.date}\n"
-            f"- 任务: {removed.task}\n"
-            f"- 方案: {removed.approach}\n"
-            f"- 归档时间: {_now()}\n",
-            "utf-8",
-        )
-
-    # ── Index ─────────────────────────────────────────────
-
-    def load_index(self) -> MemoryIndex:
-        """加载 index.json。"""
-        path = self._base / "index.json"
-        if not path.exists():
-            return MemoryIndex()
+    @staticmethod
+    def _parse_frontmatter(text: str) -> tuple[dict, str]:
+        """解析 YAML frontmatter + Markdown 正文。"""
+        if not text.startswith("---"):
+            return {}, text
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            return {}, text
         try:
-            data = json.loads(path.read_text("utf-8"))
-            topics = [
-                TopicIndexEntry(**t) for t in data.get("topics", [])
-            ]
-            return MemoryIndex(
-                user_profile_updated_at=data.get("user_profile_updated_at", ""),
-                topics=topics,
-            )
-        except (json.JSONDecodeError, KeyError):
-            return MemoryIndex()
+            frontmatter = yaml.safe_load(parts[1]) or {}
+        except yaml.YAMLError:
+            frontmatter = {}
+        return frontmatter, parts[2].strip()
 
-    def save_index(self, index: MemoryIndex) -> None:
-        """保存 index.json。"""
-        with self._lock:
-            self.ensure_dirs()
-            data = {
-                "user_profile_updated_at": index.user_profile_updated_at,
-                "topics": [
-                    {
-                        "slug": t.slug,
-                        "title": t.title,
-                        "path": t.path,
-                        "keywords": t.keywords,
-                        "summary": t.summary,
-                        "created_at": t.created_at,
-                        "updated_at": t.updated_at,
-                        "last_accessed_at": t.last_accessed_at,
-                        "entry_count": t.entry_count,
-                        "embedding": t.embedding,
-                    }
-                    for t in index.topics
-                ],
-            }
-            (self._base / "index.json").write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), "utf-8"
-            )
+    @staticmethod
+    def _serialize_memory_to_block(record: MemoryRecord) -> str:
+        """将单条记忆序列化为 Markdown H2 区块。"""
+        scope_str = record.scope.value if isinstance(record.scope, MemoryScope) else record.scope
+        type_str = record.type.value if isinstance(record.type, MemoryType) else record.type
+        status_str = record.status.value if isinstance(record.status, MemoryStatus) else record.status
 
-    def touch_topic_access(self, slug: str) -> None:
-        """更新指定 topic 的 last_accessed_at。"""
-        index = self.load_index()
-        for t in index.topics:
-            if t.slug == slug:
-                t.last_accessed_at = _now()
+        lines = [f"## {record.id}"]
+        lines.append(f"- **type**: {type_str}")
+        lines.append(f"- **status**: {status_str}")
+        lines.append("- **tags**:")
+        for tag in record.tags:
+            lines.append(f"  - {tag}")
+        lines.append(f'- **created_at**: "{record.created_at}"')
+        lines.append(f'- **updated_at**: "{record.updated_at}"')
+        lines.append(f'- **access_at**: "{record.access_at}"')
+        lines.append(f"- **access_count**: {record.access_count}")
+        if record.session_id and scope_str == "session":
+            lines.append(f'- **session_id**: "{record.session_id}"')
+        lines.append("")
+
+        # 正文每行加 4 空格缩进
+        for content_line in record.content.split("\n"):
+            lines.append(f"    {content_line}" if content_line.strip() else "")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _parse_block_to_record(block: str, scope: str | None = None) -> MemoryRecord | None:
+        """从 H2 区块文本解析为 MemoryRecord。
+
+        区块格式:
+            ## {id}
+            - **key**: value
+            ...
+
+            {缩进的正文}
+        """
+        block = block.strip()
+        if not block:
+            return None
+
+        lines = block.split("\n")
+        if not lines:
+            return None
+
+        # 解析 H2 标题 → id
+        h2_match = re.match(r"^##\s+(.+)", lines[0])
+        if not h2_match:
+            return None
+        memory_id = h2_match.group(1).strip()
+
+        # 解析元数据键值对
+        metadata: dict[str, str] = {}
+        content_start_idx = 1
+        tag_lines: list[str] = []
+        in_tags = False
+
+        for i in range(1, len(lines)):
+            line = lines[i]
+
+            # 检测 tags 多行列表
+            tag_match = re.match(r"^\s*-\s+(.+)$", line)
+            if in_tags and tag_match and not line.startswith("- **"):
+                tag_lines.append(tag_match.group(1).strip())
+                continue
+
+            # 检测元数据行: - **key**: value
+            kv_match = re.match(r"^-\s+\*\*(.+?)\*\*:\s*(.*)", line)
+            if kv_match:
+                in_tags = False
+                key = kv_match.group(1).strip()
+                value = kv_match.group(2).strip().strip('"')
+                metadata[key] = value
+                if key == "tags":
+                    in_tags = True
+                continue
+
+            # 空行 → 元数据结束，正文开始
+            if line.strip() == "" and i > 1:
+                content_start_idx = i + 1
                 break
-        self.save_index(index)
 
-    def upsert_index_entry(self, topic: TopicMemory) -> None:
-        """在索引中插入或更新一个 topic 条目。"""
-        index = self.load_index()
-        for i, t in enumerate(index.topics):
-            if t.slug == topic.slug:
-                index.topics[i] = TopicIndexEntry(
-                    slug=topic.slug,
-                    title=topic.title,
-                    path=f"topic/{topic.slug}.md",
-                    keywords=topic.keywords,
-                    summary=topic.summary,
-                    created_at=topic.created_at,
-                    updated_at=topic.updated_at,
-                    last_accessed_at=topic.last_accessed_at,
-                    entry_count=len(topic.entries),
+            # 非空非元数据行 → 正文已开始
+            if line.strip() and not kv_match:
+                content_start_idx = i
+                break
+
+        # 提取正文（去除每行 4 空格缩进）
+        content_lines: list[str] = []
+        for i in range(content_start_idx, len(lines)):
+            line = lines[i]
+            if line.startswith("    "):
+                content_lines.append(line[4:])
+            elif line.strip() == "":
+                content_lines.append("")
+            elif line.strip():
+                content_lines.append(line)
+
+        content = "\n".join(content_lines).strip()
+
+        # 构造 MemoryRecord
+        type_str = metadata.get("type", "general_knowledge")
+        scope_str = metadata.get("scope", scope or "project")
+        status_str = metadata.get("status", "ACTIVE")
+
+        try:
+            record_type = MemoryType(type_str)
+        except ValueError:
+            record_type = MemoryType.GENERAL_KNOWLEDGE
+        try:
+            record_scope = MemoryScope(scope_str)
+        except ValueError:
+            record_scope = MemoryScope.PROJECT
+        try:
+            record_status = MemoryStatus(status_str)
+        except ValueError:
+            record_status = MemoryStatus.ACTIVE
+
+        return MemoryRecord(
+            id=memory_id,
+            type=record_type,
+            scope=record_scope,
+            status=record_status,
+            tags=tag_lines if tag_lines else [],
+            session_id=metadata.get("session_id"),
+            created_at=metadata.get("created_at", _now()),
+            updated_at=metadata.get("updated_at", _now()),
+            access_at=metadata.get("access_at", _now()),
+            access_count=int(metadata.get("access_count", 0)),
+            content=content,
+        )
+
+    # ── 文件级读写 ────────────────────────────────────────
+
+    def load_daily_file(self, scope: str, date_str: str) -> list[MemoryRecord]:
+        """加载指定日期的文件，返回所有记忆记录。"""
+        file_path = self._get_file_path(scope, date_str)
+        if not file_path.exists():
+            return []
+
+        text = file_path.read_text("utf-8")
+        _, body = self._parse_frontmatter(text)
+        if not body:
+            return []
+
+        # 按 H2 分割区块
+        blocks = re.split(r"\n(?=## )", body)
+        records: list[MemoryRecord] = []
+        for block in blocks:
+            record = self._parse_block_to_record(block, scope)
+            if record:
+                records.append(record)
+        return records
+
+    def save_daily_file(self, scope: str, date_str: str, records: list[MemoryRecord]) -> None:
+        """将记忆记录列表写入每日文件（atomic write）。"""
+        file_path = self._get_file_path(scope, date_str)
+        scope_str = scope
+
+        # 构建文件内容
+        parts = ["---"]
+        parts.append(f'date: "{date_str}"')
+        parts.append(f'scope: "{scope_str}"')
+        parts.append(f"memory_count: {len(records)}")
+        parts.append("---")
+        parts.append("")
+        parts.append(f"# {date_str} 记忆记录 ({scope_str})")
+        parts.append("")
+
+        for i, record in enumerate(records):
+            parts.append(self._serialize_memory_to_block(record))
+            if i < len(records) - 1:
+                parts.append("---")
+                parts.append("")
+
+        content = "\n".join(parts) + "\n"
+
+        # atomic_write: 先写临时文件 → os.replace 原子替换
+        self.ensure_dirs()
+        fd, tmp_path = tempfile.mkstemp(
+            suffix=".md", prefix=".tmp_", dir=file_path.parent
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp_path, file_path)
+        except Exception:
+            # 清理临时文件
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+
+    def _append_record_locked(self, record: MemoryRecord) -> None:
+        """向每日文件追加记忆记录（调用方已持锁）。"""
+        scope_str = record.scope.value if isinstance(record.scope, MemoryScope) else record.scope
+        date_str = extract_date_from_id(record.id)
+        existing = self.load_daily_file(scope_str, date_str)
+        existing.append(record)
+        self.save_daily_file(scope_str, date_str, existing)
+
+    def append_record(self, record: MemoryRecord) -> None:
+        """向每日文件追加一条记忆记录（线程安全）。"""
+        scope_str = record.scope.value if isinstance(record.scope, MemoryScope) else record.scope
+        date_str = extract_date_from_id(record.id)
+        file_path_str = f"{scope_str}/{date_str}.md"
+        lock = self._acquire_lock(file_path_str)
+        with lock:
+            self._append_record_locked(record)
+
+    def _remove_record_locked(
+        self, memory_id: str, scope: str, date_str: str
+    ) -> MemoryRecord | None:
+        """从每日文件移除记忆记录（调用方已持锁）。"""
+        file_path = self._get_file_path(scope, date_str)
+        existing = self.load_daily_file(scope, date_str)
+        removed = None
+        new_records = []
+        for rec in existing:
+            if rec.id == memory_id:
+                removed = rec
+            else:
+                new_records.append(rec)
+        if removed:
+            if new_records:
+                self.save_daily_file(scope, date_str, new_records)
+            elif file_path.exists():
+                file_path.unlink()
+        return removed
+
+    def remove_record(self, memory_id: str, scope: str, date_str: str) -> MemoryRecord | None:
+        """从每日文件中移除一条记忆记录（线程安全），返回被移除的记录。"""
+        file_path_str = f"{scope}/{date_str}.md"
+        lock = self._acquire_lock(file_path_str)
+        with lock:
+            return self._remove_record_locked(memory_id, scope, date_str)
+
+    def _update_record_locked(self, memory_id: str, updated: MemoryRecord, scope: str) -> None:
+        """更新每日文件中的记忆记录（调用方已持锁）。"""
+        date_str = extract_date_from_id(memory_id)
+        existing = self.load_daily_file(scope, date_str)
+        for i, rec in enumerate(existing):
+            if rec.id == memory_id:
+                existing[i] = updated
+                self.save_daily_file(scope, date_str, existing)
+                return
+
+    def update_record(self, memory_id: str, updated: MemoryRecord, scope: str) -> None:
+        """更新每日文件中的一条记忆记录（线程安全）。"""
+        date_str = extract_date_from_id(memory_id)
+        file_path_str = f"{scope}/{date_str}.md"
+        lock = self._acquire_lock(file_path_str)
+        with lock:
+            self._update_record_locked(memory_id, updated, scope)
+
+    def move_record_between_files(
+        self,
+        memory_id: str,
+        from_scope: str,
+        from_date: str,
+        to_scope: str,
+        to_date: str,
+    ) -> MemoryRecord | None:
+        """将记忆记录从一个文件移动到另一个文件（用于归档和唤醒）。
+
+        这是一个复合操作，需要获取两个文件的锁。为避免死锁，按路径字母序获取。
+        """
+        from_path = f"{from_scope}/{from_date}.md"
+        to_path = f"{to_scope}/{to_date}.md"
+
+        # 按路径字母序获取锁，避免死锁
+        first, second = sorted([from_path, to_path])
+        lock1 = self._acquire_lock(first)
+        lock2 = self._acquire_lock(second)
+
+        with lock1:
+            if first != second:
+                with lock2:
+                    return self._move_record_impl(
+                        memory_id, from_scope, from_date, to_scope, to_date
+                    )
+            else:
+                return self._move_record_impl(
+                    memory_id, from_scope, from_date, to_scope, to_date
                 )
-                break
-        else:
-            index.topics.append(TopicIndexEntry(
-                slug=topic.slug,
-                title=topic.title,
-                path=f"topic/{topic.slug}.md",
-                keywords=topic.keywords,
-                summary=topic.summary,
-                created_at=topic.created_at,
-                updated_at=topic.updated_at,
-                last_accessed_at=topic.last_accessed_at,
-                entry_count=len(topic.entries),
-            ))
-        self.save_index(index)
 
+    def _move_record_impl(
+        self, memory_id: str, from_scope: str, from_date: str, to_scope: str, to_date: str
+    ) -> MemoryRecord | None:
+        """move_record 的内部实现（调用方已持两个文件的锁）。"""
+        # 从源文件移除（使用 _locked 版本避免重复加锁）
+        removed = self._remove_record_locked(memory_id, from_scope, from_date)
+        if not removed:
+            return None
 
-# ── Helpers ────────────────────────────────────────────────
+        # 追加到目标文件（使用 _locked 版本避免重复加锁）
+        self._append_record_locked(removed)
+        return removed
 
-def _parse_markdown_with_frontmatter(text: str) -> tuple[dict, str]:
-    """解析 YAML frontmatter + Markdown 正文。"""
-    if not text.startswith("---"):
-        return {}, text
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}, text
-    try:
-        frontmatter = yaml.safe_load(parts[1]) or {}
-    except yaml.YAMLError:
-        frontmatter = {}
-    return frontmatter, parts[2].strip()
+    def delete_empty_file(self, scope: str, date_str: str) -> bool:
+        """删除空的每日文件，返回是否执行了删除。"""
+        file_path = self._get_file_path(scope, date_str)
+        if not file_path.exists():
+            return False
+        records = self.load_daily_file(scope, date_str)
+        if not records:
+            file_path.unlink()
+            return True
+        return False
+
+    def list_all_file_keys(self) -> list[tuple[str, str]]:
+        """列出所有每日文件键 (scope, date_str)。"""
+        keys: list[tuple[str, str]] = []
+        self.ensure_dirs()
+        for scope_dir_name in ("user", "project", "session", "archive"):
+            scope_path = self._base / scope_dir_name
+            if not scope_path.exists():
+                continue
+            for md_file in scope_path.glob("*.md"):
+                date_str = md_file.stem  # "2026-06-04"
+                keys.append((scope_dir_name, date_str))
+        return keys

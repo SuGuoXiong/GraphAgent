@@ -33,6 +33,7 @@ def _init_memory_system():
     if _memory_manager is None:
         from graph_agent.memory import MemoryManager, UserPreferenceStore, AgentMemoryStore
         _memory_manager = MemoryManager()
+        _memory_manager.init()  # 初始化存储目录、FTS5 表、注册工具
         _preference_store = UserPreferenceStore(_memory_manager)
         _agent_memory_store = AgentMemoryStore(_memory_manager)
 

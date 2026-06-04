@@ -2,6 +2,8 @@
 
 作为后台异步任务执行，不阻塞用户交互。
 使用 LLM 语义理解能力提取结构化记忆数据。
+
+v2 更新：新增 result_to_records() 将提取结果转换为 MemoryRecord 列表。
 """
 
 from __future__ import annotations
@@ -14,11 +16,13 @@ from typing import TYPE_CHECKING
 
 from graph_agent.memory.memory_store import MemoryStore
 from graph_agent.memory.memory_types import (
-    UserProfile,
-    UserPreferenceItem,
-    TopicMemory,
-    TopicMemoryEntry,
+    MemoryRecord,
+    MemoryType,
+    MemoryScope,
+    MemoryStatus,
     _now,
+    _today_str,
+    generate_memory_id,
 )
 
 if TYPE_CHECKING:
@@ -164,6 +168,116 @@ class MemoryExtractor:
             except Exception:
                 lines.append(str(m)[:2000])
         return "\n".join(lines[-40:])  # 最多取最近 40 条消息，控制 token 消耗
+
+    # ── 结果转换（v2 新增） ──────────────────────────────
+
+    def result_to_records(
+        self, result: dict, session_id: str = ""
+    ) -> list[MemoryRecord]:
+        """将 extract() 的返回结果转换为 MemoryRecord 列表。
+
+        Args:
+            result: extract() 的返回 dict，格式:
+                {"profile_increments": [...], "topic_memory": {...} | None}
+            session_id: 当前会话 ID（用于 session 范围的记忆）
+
+        Returns:
+            MemoryRecord 列表，可直接传入 MemoryManager.create()
+        """
+        records: list[MemoryRecord] = []
+
+        # 转换用户画像增量
+        profile_increments = result.get("profile_increments", [])
+        for inc in profile_increments:
+            if isinstance(inc, dict):
+                category = inc.get("category", "其他")
+                content = inc.get("content", "")
+                if content:
+                    records.append(MemoryRecord(
+                        id=generate_memory_id(),
+                        type=MemoryType.USER_PREFERENCE,
+                        scope=MemoryScope.USER,
+                        status=MemoryStatus.ACTIVE,
+                        tags=self._extract_tags(content, max_tags=3),
+                        session_id=None,
+                        content=f"[{category}] {content}",
+                    ))
+
+        # 转换主题记忆
+        topic_data = result.get("topic_memory")
+        if topic_data and isinstance(topic_data, dict):
+            inferred_type = self._infer_type(topic_data)
+            records.append(MemoryRecord(
+                id=generate_memory_id(),
+                type=inferred_type,
+                scope=MemoryScope.PROJECT,
+                status=MemoryStatus.ACTIVE,
+                tags=topic_data.get("keywords", [])[:3],
+                session_id=session_id if inferred_type == MemoryType.BUG_PITFALL else None,
+                content=self._format_topic_content(topic_data),
+            ))
+
+        return records
+
+    @staticmethod
+    def _extract_tags(content: str, max_tags: int = 3) -> list[str]:
+        """从内容中提取关键词作为 tags。"""
+        # 简单实现：取中英文关键词
+        chinese = re.findall(r'[一-鿿]{2,}', content)
+        english = re.findall(r'[a-zA-Z]{3,}', content.lower())
+        candidates = chinese + english
+        # 去重并限制数量
+        seen: set[str] = set()
+        result: list[str] = []
+        for c in candidates:
+            if c not in seen:
+                seen.add(c)
+                result.append(c)
+            if len(result) >= max_tags:
+                break
+        return result if result else ["通用"]
+
+    @staticmethod
+    def _infer_type(topic_data: dict) -> MemoryType:
+        """从主题数据推断记忆类型。"""
+        keywords = topic_data.get("keywords", [])
+        title = topic_data.get("title", "")
+        topic_title = topic_data.get("topic_title", "")
+        combined = " ".join(keywords) + " " + title + " " + topic_title
+
+        bug_keywords = ["bug", "错误", "报错", "异常", "修复", "故障", "踩坑"]
+        arch_keywords = ["架构", "设计", "选型", "模块", "分层", "部署"]
+        pattern_keywords = ["模式", "接口", "封装", "组件", "抽象", "interface"]
+        rule_keywords = ["规范", "编码", "命名", "约定", "流程", "制度"]
+
+        if any(kw in combined for kw in bug_keywords):
+            return MemoryType.BUG_PITFALL
+        if any(kw in combined for kw in arch_keywords):
+            return MemoryType.ARCH_DESIGN
+        if any(kw in combined for kw in pattern_keywords):
+            return MemoryType.DESIGN_PATTERN
+        if any(kw in combined for kw in rule_keywords):
+            return MemoryType.PROJECT_RULE
+
+        return MemoryType.GENERAL_KNOWLEDGE
+
+    @staticmethod
+    def _format_topic_content(data: dict) -> str:
+        """将主题记忆数据格式化为 content 文本。"""
+        parts = []
+        title = data.get("title", "")
+        if title:
+            parts.append(f"## {title}")
+        task = data.get("task", "")
+        if task:
+            parts.append(f"**任务**: {task}")
+        approach = data.get("approach", "")
+        if approach:
+            parts.append(f"**方案**: {approach}")
+        lessons = data.get("lessons", "")
+        if lessons:
+            parts.append(f"**经验**: {lessons}")
+        return "\n".join(parts)
 
 
 def _parse_json_response(text: str) -> dict | list:

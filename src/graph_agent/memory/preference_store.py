@@ -1,6 +1,6 @@
 """用户长期偏好存储 —— Layer 2 扩展点。
 
-基于文件存储的用户画像管理，提供偏好注入到 GuardAgent 上下文。
+v2 适配：使用新的 MemoryRecord 格式和 load_for_context() API。
 通过 MemoryManager 统一管理存储、提取和衰减。
 """
 
@@ -26,11 +26,11 @@ class UserPreferenceStore:
     def set_manager(self, manager: "MemoryManager") -> None:
         self._manager = manager
 
-    def get_preferences(self) -> dict | None:
-        """获取当前用户画像（完整 dict）。"""
+    def get_preferences(self) -> list[dict]:
+        """获取当前用户偏好列表。"""
         if self._manager is None:
-            return None
-        prefs, _ = self._manager.load()
+            return []
+        prefs, _ = self._manager.load_for_context()
         return prefs
 
     def to_context_message(self) -> "MessageBlock | None":

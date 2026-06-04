@@ -1,7 +1,6 @@
 """Agent 记忆检索 —— Layer 3 扩展点。
 
-基于关键词匹配 + 时间衰减的主题记忆检索，
-为 PlanAgent 提供历史相似任务的经验参考。
+v2 适配：使用新的 MemoryRecord 格式和 FTS5 检索。
 通过 MemoryManager 统一管理存储、检索和衰减。
 """
 
@@ -31,7 +30,18 @@ class AgentMemoryStore:
         """检索与当前意图相似的历史任务。"""
         if self._manager is None:
             return []
-        return self._manager.search(intent, top_k)
+        results = self._manager.search(intent, limit=top_k)
+        return [
+            {
+                "id": r.id,
+                "type": r.type,
+                "scope": r.scope,
+                "tags": r.tags,
+                "content": r.content,
+                "created_at": r.created_at,
+            }
+            for r in results
+        ]
 
     def to_context_message(self, intent: str, top_k: int = 3) -> "MessageBlock | None":
         """将记忆检索结果格式化为上下文消息（Layer 3 注入时调用）。"""

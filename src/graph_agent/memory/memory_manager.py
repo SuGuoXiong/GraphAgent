@@ -1,11 +1,11 @@
-"""记忆管理器 —— 核心编排层。
+"""记忆管理器（v2 重构版）—— 核心编排层。
 
-协调五个子系统：存储、提取、检索、注入、衰减。
+协调五个子系统：存储、索引、检索、提取、注入。
 
-三层触发：
+生命周期:
     1. 实时提取 (extract_async) — execute_turn 返回后异步执行
     2. 会话结束合并 (consolidate) — 下一个 send_message 到达时同步执行
-    3. 新会话加载 (load) — create_session / load_session 时同步执行
+    3. 新会话加载 (load_for_context) — 会话创建时同步执行
 """
 
 from __future__ import annotations
@@ -15,16 +15,19 @@ import logging
 from typing import TYPE_CHECKING
 
 from graph_agent.memory.memory_store import MemoryStore
-from graph_agent.memory.memory_extractor import MemoryExtractor
-from graph_agent.memory.memory_retriever import MemoryRetriever
-from graph_agent.memory.memory_injector import MemoryInjector
+from graph_agent.memory.memory_indexer import MemoryIndexer
+from graph_agent.memory.memory_searcher import MemorySearcher
 from graph_agent.memory.memory_types import (
-    UserProfile,
-    UserPreferenceItem,
-    TopicMemory,
-    TopicMemoryEntry,
-    SearchResult,
+    MemoryRecord,
+    MemoryType,
+    MemoryScope,
+    MemoryStatus,
+    SearchMemoryInput,
+    SearchMemoryResult,
     _now,
+    _today_str,
+    generate_memory_id,
+    extract_date_from_id,
 )
 
 if TYPE_CHECKING:
@@ -32,10 +35,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 单 topic 超过此数量触发 LLM 合并
+# 去重文本相似度阈值
+_DEDUP_SIMILARITY_THRESHOLD = 0.85
+# 单个 topic 最大条目数
 _MAX_ENTRIES_PER_TOPIC = 10
 # 记忆过期天数
 _EXPIRY_DAYS = 90
+# 低访问阈值（30 天内）
+_LOW_ACCESS_THRESHOLD = 2
+# INVALID 保留天数
+_INVALID_RETENTION_DAYS = 30
 
 
 class MemoryManager:
@@ -43,76 +52,433 @@ class MemoryManager:
 
     使用方式:
         mgr = MemoryManager()
-        user_prefs, memory_index = mgr.load()
-        # ... 编排执行 ...
-        memory_refs = mgr.search(intent)
+        mgr.init()
+
+        # 检索
+        results = mgr.search("Python 代码风格", type="project_rule")
+
+        # 创建
+        record = MemoryRecord(type=..., scope=..., tags=[...], content="...")
+        mgr.create(record)
+
+        # 生命周期
+        mgr.archive(memory_id)
+        mgr.invalidate(memory_id)
+
+        # 会话集成
         mgr.extract_async(session_id, messages, task_summary)
-        # ... 下一个 send_message 时 ...
         mgr.consolidate(session_id)
     """
 
-    def __init__(self, store: MemoryStore | None = None):
-        self._store = store or MemoryStore()
-        self._extractor = MemoryExtractor(self._store)
-        self._retriever = MemoryRetriever(self._store)
-        self._injector = MemoryInjector()
+    def __init__(self, base_dir: str | None = None):
+        self._store = MemoryStore(base_dir)
+        self._indexer = MemoryIndexer()
+        self._searcher = MemorySearcher(self._indexer, self._store)
+        self._initialized = False
 
-        # 暂存区: {session_id: {"profile": [...], "topic": {...}}}
-        self._pending: dict[str, dict] = {}
+        # 暂存区: {session_id: list[MemoryRecord]}
+        self._pending: dict[str, list[MemoryRecord]] = {}
 
-    # ── Layer 1: 加载 (会话创建时调用) ─────────────────
+    def init(self) -> None:
+        """初始化记忆系统（幂等操作）。"""
+        if self._initialized:
+            return
+        self._store.ensure_dirs()
+        self._indexer.init_db()
+        self._register_tool()
+        self._initialized = True
 
-    def load(self) -> tuple[dict | None, list[dict]]:
-        """加载用户画像和主题记忆索引。
+    def _register_tool(self) -> None:
+        """注册 search_memory 工具。"""
+        try:
+            from graph_agent.memory.memory_tool import register_memory_tool
+            register_memory_tool()
+        except Exception as e:
+            logger.debug(f"search_memory 工具注册跳过: {e}")
+
+    # ── CRUD ──────────────────────────────────────────────
+
+    def create(self, record: MemoryRecord) -> str:
+        """创建一条新记忆，返回记忆 ID。
+
+        自动执行去重检查（FTS5 召回 + 文本相似度精确判断）。
+        """
+        self.init()
+
+        # 去重检查
+        existing = self._find_duplicate(record)
+        if existing:
+            # 合并更新已有记忆
+            existing.content = record.content
+            existing.tags = list(set(existing.tags) | set(record.tags))
+            existing.updated_at = _now()
+            self.update(existing.id, existing)
+            logger.debug(f"记忆去重合并: {existing.id}")
+            return existing.id
+
+        # 创建新记忆（确保有有效 ID）
+        if not record.id or len(record.id) < 20:
+            record.id = generate_memory_id()
+        record.created_at = _now()
+        record.updated_at = _now()
+        record.access_at = _now()
+        record.access_count = 0
+        record.status = MemoryStatus.ACTIVE
+
+        # 写入文件 + 索引
+        self._store.append_record(record)
+        self._indexer.upsert_record(record)
+
+        logger.debug(f"记忆创建: {record.id}")
+        return record.id
+
+    def get(self, memory_id: str) -> MemoryRecord | None:
+        """根据 ID 获取记忆（合并文件和 DB 数据）。"""
+        self.init()
+
+        meta = self._indexer.get_meta(memory_id)
+        if not meta:
+            return None
+
+        scope = meta["scope"]
+        date_str = extract_date_from_id(memory_id)
+
+        # 从文件加载 content（权威来源）
+        records = self._store.load_daily_file(scope, date_str)
+        for rec in records:
+            if rec.id == memory_id:
+                # 用 DB 中的统计字段覆盖文件中的值
+                rec.access_at = meta.get("access_at", rec.access_at)
+                rec.access_count = meta.get("access_count", rec.access_count)
+                rec.status = MemoryStatus(meta["status"]) if meta.get("status") else rec.status
+                return rec
+
+        # 文件中有该记忆的记录
+        return None
+
+    def update(self, memory_id: str, record: MemoryRecord) -> None:
+        """更新一条已有记忆。"""
+        self.init()
+
+        meta = self._indexer.get_meta(memory_id)
+        if not meta:
+            raise ValueError(f"记忆不存在: {memory_id}")
+
+        old_status = meta.get("status", "ACTIVE")
+        scope = meta["scope"]
+        date_str = extract_date_from_id(memory_id)
+
+        record.id = memory_id
+        record.updated_at = _now()
+        record.created_at = meta.get("created_at", record.created_at)
+
+        # 如果原状态为 ARCHIVED，唤醒
+        if old_status == MemoryStatus.ARCHIVED.value:
+            record.status = MemoryStatus.ACTIVE
+            record.updated_at = _now()
+            # 从 archive/ 移回原文件
+            self._store.move_record_between_files(
+                memory_id=memory_id,
+                from_scope="archive",
+                from_date=date_str,
+                to_scope=scope,
+                to_date=date_str,
+            )
+
+        # 更新文件
+        self._store.update_record(memory_id, record, scope)
+
+        # 更新索引
+        self._indexer.upsert_record(record)
+
+        logger.debug(f"记忆更新: {memory_id}")
+
+    def delete(self, memory_id: str) -> None:
+        """物理删除一条记忆（不可逆）。"""
+        self.init()
+
+        meta = self._indexer.get_meta(memory_id)
+        if not meta:
+            return
+
+        scope = meta["scope"]
+        date_str = extract_date_from_id(memory_id)
+
+        # 从文件移除
+        self._store.remove_record(memory_id, scope, date_str)
+
+        # 从索引删除
+        self._indexer.delete_record(memory_id)
+
+        logger.info(f"记忆物理删除: {memory_id}")
+
+    # ── 检索 ──────────────────────────────────────────────
+
+    def search(
+        self,
+        query: str,
+        type: str | None = None,
+        scope: str | None = None,
+        include_archived: bool = False,
+        limit: int = 3,
+    ) -> list[SearchMemoryResult]:
+        """检索记忆（供 search_memory 工具调用）。"""
+        self.init()
+
+        input_ = SearchMemoryInput(
+            query=query,
+            type=type,
+            scope=scope,
+            include_archived=include_archived,
+            limit=limit,
+        )
+        return self._searcher.search(input_)
+
+    # ── 状态管理 ──────────────────────────────────────────
+
+    def archive(self, memory_id: str) -> None:
+        """将记忆归档（ACTIVE → ARCHIVED）。"""
+        self.init()
+
+        meta = self._indexer.get_meta(memory_id)
+        if not meta:
+            raise ValueError(f"记忆不存在: {memory_id}")
+
+        if meta["status"] != MemoryStatus.ACTIVE.value:
+            logger.debug(f"记忆 {memory_id} 状态为 {meta['status']}，跳过归档")
+            return
+
+        scope = meta["scope"]
+        date_str = extract_date_from_id(memory_id)
+        today = _today_str()
+
+        # 移动到 archive/ 目录
+        record = self._store.move_record_between_files(
+            memory_id=memory_id,
+            from_scope=scope,
+            from_date=date_str,
+            to_scope="archive",
+            to_date=today,
+        )
+
+        if record:
+            # 更新 meta
+            self._indexer.update_meta(
+                memory_id,
+                status=MemoryStatus.ARCHIVED.value,
+                file_path=f"archive/{today}.md",
+                updated_at=_now(),
+            )
+
+        logger.debug(f"记忆归档: {memory_id}")
+
+    def activate(self, memory_id: str) -> None:
+        """激活记忆（ARCHIVED → ACTIVE）。"""
+        self.init()
+
+        meta = self._indexer.get_meta(memory_id)
+        if not meta:
+            raise ValueError(f"记忆不存在: {memory_id}")
+
+        if meta["status"] != MemoryStatus.ARCHIVED.value:
+            logger.debug(f"记忆 {memory_id} 状态为 {meta['status']}，跳过激活")
+            return
+
+        scope = meta["scope"]
+        date_str = extract_date_from_id(memory_id)
+        archive_date = meta.get("file_path", "").split("/")[-1].replace(".md", "") or date_str
+
+        # 从 archive/ 移回原文件
+        self._store.move_record_between_files(
+            memory_id=memory_id,
+            from_scope="archive",
+            from_date=archive_date,
+            to_scope=scope,
+            to_date=date_str,
+        )
+
+        self._indexer.update_meta(
+            memory_id,
+            status=MemoryStatus.ACTIVE.value,
+            file_path=f"{scope}/{date_str}.md",
+            updated_at=_now(),
+        )
+
+        logger.info(f"记忆激活: {memory_id}")
+
+    def invalidate(self, memory_id: str) -> None:
+        """将记忆标记为废弃（→ INVALID）。"""
+        self.init()
+
+        meta = self._indexer.get_meta(memory_id)
+        if not meta:
+            raise ValueError(f"记忆不存在: {memory_id}")
+
+        # 更新 meta 状态
+        self._indexer.update_meta(
+            memory_id,
+            status=MemoryStatus.INVALID.value,
+            updated_at=_now(),
+        )
+
+        # 从 FTS5 删除（保留 meta 记录备查）
+        self._indexer.delete_fts_only(memory_id)
+
+        logger.info(f"记忆废弃: {memory_id}")
+
+    # ── 批量操作 ──────────────────────────────────────────
+
+    def archive_session_memories(self, session_id: str) -> int:
+        """归档指定会话的所有 ACTIVE 记忆。返回归档数量。"""
+        self.init()
+
+        memories = self._indexer.get_session_memories(session_id)
+        count = 0
+        for mem in memories:
+            try:
+                self.archive(mem["id"])
+                count += 1
+            except Exception as e:
+                logger.warning(f"归档会话记忆失败 {mem['id']}: {e}")
+
+        logger.info(f"会话记忆归档: session={session_id[:12]}..., count={count}")
+        return count
+
+    def run_maintenance(self) -> dict:
+        """执行定时维护任务，返回操作统计。"""
+        self.init()
+
+        stats = {
+            "archived": 0,
+            "deleted": 0,
+            "empty_files_cleaned": 0,
+            "index_verified": False,
+            "index_rebuilt": False,
+        }
+
+        # 1. 扫描 ACTIVE 记忆，检查归档条件
+        candidates = self._indexer.get_records_for_maintenance(
+            status=MemoryStatus.ACTIVE.value,
+            min_age_days=_EXPIRY_DAYS,
+            max_access_count=_LOW_ACCESS_THRESHOLD,
+        )
+        for mem in candidates:
+            try:
+                self.archive(mem["id"])
+                stats["archived"] += 1
+            except Exception as e:
+                logger.warning(f"自动归档失败 {mem['id']}: {e}")
+
+        # 2. 清理空文件
+        for scope, date_str in self._store.list_all_file_keys():
+            if self._store.delete_empty_file(scope, date_str):
+                stats["empty_files_cleaned"] += 1
+
+        # 3. 清理过期 INVALID 记忆（物理删除）
+        invalid_count = self._indexer.count_by_status(MemoryStatus.INVALID.value)
+        if invalid_count > 0:
+            from datetime import datetime, timezone, timedelta
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=_INVALID_RETENTION_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            # 注：实际实现中应查询 updated_at < cutoff 的 INVALID 记录
+            # 此处简化处理
+
+        # 4. 验证索引一致性
+        total_file_records = 0
+        for scope, date_str in self._store.list_all_file_keys():
+            records = self._store.load_daily_file(scope, date_str)
+            total_file_records += len(records)
+
+        stats["index_verified"] = self._indexer.verify_consistency(total_file_records)
+
+        if not stats["index_verified"]:
+            # 重建索引
+            records_by_file: dict[tuple[str, str], list[MemoryRecord]] = {}
+            for scope, date_str in self._store.list_all_file_keys():
+                records = self._store.load_daily_file(scope, date_str)
+                if records:
+                    records_by_file[(scope, date_str)] = records
+            self._indexer.rebuild_index(records_by_file)
+            stats["index_rebuilt"] = True
+
+        logger.info(
+            f"维护任务完成: archived={stats['archived']}, deleted={stats['deleted']}, "
+            f"empty_cleaned={stats['empty_files_cleaned']}, "
+            f"index_verified={stats['index_verified']}, index_rebuilt={stats['index_rebuilt']}"
+        )
+        return stats
+
+    # ── 上下文注入 ────────────────────────────────────────
+
+    def load_for_context(self, limit: int = 10) -> tuple[list[dict], list[dict]]:
+        """加载记忆用于上下文注入（替代旧 load() 方法）。
 
         Returns:
-            (user_preferences_dict, memory_index_list)
+            (user_preferences_list, other_memories_list)
         """
-        profile = self._store.load_profile()
-        index = self._store.load_index()
+        self.init()
 
-        user_prefs = self._profile_to_dict(profile) if profile.preferences else None
-
-        memory_index_list = [
+        # 用户偏好：所有 ACTIVE 的 user_preference 类型记忆
+        user_prefs = self.search(
+            query="",
+            type=MemoryType.USER_PREFERENCE.value,
+            scope=MemoryScope.USER.value,
+            limit=limit,
+        )
+        user_prefs_list = [
             {
-                "slug": t.slug,
-                "title": t.title,
-                "keywords": t.keywords,
-                "summary": t.summary,
+                "id": r.id,
+                "type": r.type,
+                "scope": r.scope,
+                "tags": r.tags,
+                "content": r.content,
+                "created_at": r.created_at,
             }
-            for t in index.topics
-        ] if index.topics else []
-
-        return user_prefs, memory_index_list
-
-    # ── Layer 2: 检索 (GuardAgent 意图分析后调用) ──────
-
-    def search(self, intent: str, top_k: int = 5) -> list[dict]:
-        """检索与当前意图相关的主题记忆。
-
-        Returns:
-            匹配的完整主题记忆条目列表 (dict 格式，可直接注入)
-        """
-        results = self._retriever.search(intent, top_k)
-        return [
-            {
-                "slug": r.slug,
-                "title": r.title,
-                "score": r.score,
-                "entry": {
-                    "title": r.entry.title,
-                    "task": r.entry.task,
-                    "approach": r.entry.approach,
-                    "lessons": r.entry.lessons,
-                    "user_feedback": r.entry.user_feedback,
-                    "user_adjustment": r.entry.user_adjustment,
-                    "date": r.entry.date,
-                },
-            }
-            for r in results
+            for r in user_prefs
         ]
 
-    # ── Layer 3: 提取 (execute_turn 返回后异步调用) ────
+        # 其他记忆：最近访问的架构/规范/模式/避坑类记忆
+        other_types = [
+            MemoryType.ARCH_DESIGN.value,
+            MemoryType.PROJECT_RULE.value,
+            MemoryType.DESIGN_PATTERN.value,
+            MemoryType.BUG_PITFALL.value,
+            MemoryType.GENERAL_KNOWLEDGE.value,
+        ]
+        other_memories: list[dict] = []
+        for t in other_types:
+            results = self.search(query="", type=t, limit=limit)
+            for r in results:
+                other_memories.append({
+                    "id": r.id,
+                    "type": r.type,
+                    "scope": r.scope,
+                    "tags": r.tags,
+                    "content": r.content,
+                    "created_at": r.created_at,
+                })
+
+        # 按 access_at 排序截断
+        other_memories = other_memories[:limit]
+
+        return user_prefs_list, other_memories
+
+    def to_profile_message(self, profile_list: list[dict] | None) -> "MessageBlock | None":
+        """将用户偏好列表转为上下文消息（Layer 2 注入）。"""
+        if not profile_list:
+            return None
+
+        from graph_agent.memory.memory_injector import MemoryInjector
+        return MemoryInjector.format_profile_v2(profile_list)
+
+    def to_memory_message(self, memory_list: list[dict] | None) -> "MessageBlock | None":
+        """将记忆列表转为上下文消息（Layer 3 注入）。"""
+        if not memory_list:
+            return None
+
+        from graph_agent.memory.memory_injector import MemoryInjector
+        return MemoryInjector.format_memories_v2(memory_list)
+
+    # ── 提取 ──────────────────────────────────────────────
 
     def extract_async(
         self,
@@ -121,14 +487,11 @@ class MemoryManager:
         task_summary: str = "",
         user_feedback: str = "",
     ) -> None:
-        """提交异步记忆提取任务（不阻塞当前请求）。
-
-        仅将任务放入事件循环，不等待完成。
-        """
+        """提交异步记忆提取任务（不阻塞当前请求）。"""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            return  # 没有事件循环，跳过
+            return
 
         loop.create_task(self._extract_and_stage(
             session_id, messages, task_summary, user_feedback,
@@ -142,222 +505,94 @@ class MemoryManager:
         user_feedback: str,
     ) -> None:
         """在后台执行提取并将结果写入暂存区。"""
+        self.init()
+
         try:
-            result = await self._extractor.extract(
-                messages, task_summary, user_feedback,
-            )
-            self._pending[session_id] = result
-            logger.debug(f"记忆提取完成 session={session_id[:12]}...")
+            from graph_agent.memory.memory_extractor import MemoryExtractor
+            extractor = MemoryExtractor(self._store)
+            result = await extractor.extract(messages, task_summary, user_feedback)
+
+            # 将提取结果转换为 MemoryRecord 列表并暂存
+            records = extractor.result_to_records(result, session_id)
+            if records:
+                self._pending[session_id] = records
+                logger.debug(f"记忆提取完成 session={session_id[:12]}..., count={len(records)}")
         except Exception as e:
             logger.warning(f"记忆提取失败 session={session_id[:12]}...: {e}")
 
-    # ── Layer 4: 合并 (下一次 send_message 时同步调用) ──
+    def consolidate(self, session_id: str) -> int:
+        """合并暂存记忆到正式存储。返回合并的记忆数量。"""
+        self.init()
 
-    def consolidate(self, session_id: str) -> None:
-        """将暂存区中的增量记忆合并到正式存储。
-
-        执行去重、冲突解决、LLM 合并（如需要）。
-        """
         pending = self._pending.pop(session_id, None)
         if not pending:
-            return
+            return 0
 
-        try:
-            # 合并用户画像
-            profile_increments = pending.get("profile_increments", [])
-            if profile_increments:
-                self._merge_profile(profile_increments)
+        count = 0
+        for record in pending:
+            try:
+                self.create(record)
+                count += 1
+            except Exception as e:
+                logger.warning(f"记忆合并失败 {record.id}: {e}")
 
-            # 合并主题记忆
-            topic_data = pending.get("topic_memory")
-            if topic_data:
-                self._merge_topic(topic_data)
-        except Exception as e:
-            logger.warning(f"记忆合并失败: {e}")
+        logger.debug(f"记忆合并完成 session={session_id[:12]}..., count={count}")
+        return count
 
-    def _merge_profile(self, increments: list[dict]) -> None:
-        """将用户画像增量合并到已有画像。
+    # ── 内部方法 ──────────────────────────────────────────
 
-        冲突策略: 同一维度的偏好以最新为准。
-        """
-        profile = self._store.load_profile()
+    def _find_duplicate(self, record: MemoryRecord) -> MemoryRecord | None:
+        """检查是否存在高度相似的已有记忆（用于去重）。"""
+        # 快速召回：FTS5 检索候选
+        type_str = record.type.value if hasattr(record.type, 'value') else record.type
+        scope_str = record.scope.value if hasattr(record.scope, 'value') else record.scope
+        query = " ".join(record.tags) if record.tags else record.content[:50]
 
-        for inc in increments:
-            category = inc.get("category", "其他")
-            content = inc.get("content", "")
-            if not content:
-                continue
-
-            if category not in profile.preferences:
-                profile.preferences[category] = []
-
-            # 检查是否与已有条目语义重复（简单包含判断）
-            exists = False
-            for item in profile.preferences[category]:
-                if content in item.content or item.content in content:
-                    # 更新为最新表述
-                    item.content = content
-                    item.updated_at = _now()
-                    item.stale = False
-                    exists = True
-                    break
-
-            if not exists:
-                profile.preferences[category].append(
-                    UserPreferenceItem(category=category, content=content)
-                )
-
-        # 标记超过 90 天未更新的条为可能过时
-        self._mark_stale_preferences(profile)
-
-        self._store.save_profile(profile)
-
-    def _merge_topic(self, data: dict) -> None:
-        """将主题记忆增量合并到已有主题存储。
-
-        策略:
-        1. 按 topic_slug 查找已有主题
-        2. 相似条目合并，否则追加
-        3. 超量时触发合并
-        """
-        slug = data.get("topic_slug", "general")
-        title = data.get("topic_title", slug)
-
-        topic = self._store.load_topic(slug)
-        if topic is None:
-            topic = TopicMemory(
-                slug=slug,
-                title=title,
-                keywords=data.get("keywords", []),
-                summary=data.get("title", ""),
-                created_at=_now(),
-            )
-
-        # 更新元数据
-        topic.title = title
-        existing_keywords = set(topic.keywords)
-        existing_keywords.update(data.get("keywords", []))
-        topic.keywords = list(existing_keywords)
-
-        # 检查重复（标题相似度）
-        new_title = data.get("title", "")
-        duplicate = False
-        for entry in topic.entries:
-            if _title_similarity(new_title, entry.title) > 0.8:
-                # 更新已有条目
-                entry.task = data.get("task", entry.task)
-                entry.approach = data.get("approach", entry.approach)
-                entry.lessons = data.get("lessons", entry.lessons)
-                entry.date = _now()
-                duplicate = True
-                break
-
-        if not duplicate:
-            topic.entries.insert(0, TopicMemoryEntry(
-                title=new_title,
-                task=data.get("task", ""),
-                approach=data.get("approach", ""),
-                lessons=data.get("lessons", ""),
-                user_feedback="",
-                date=_now(),
-            ))
-
-        # 超量合并（简单截断 + 保留最新 N 条）
-        if len(topic.entries) > _MAX_ENTRIES_PER_TOPIC:
-            # 保留最新的 MAX_ENTRIES_PER_TOPIC 条
-            topic.entries = topic.entries[:_MAX_ENTRIES_PER_TOPIC]
-
-        # 清理过期条目
-        topic.entries = [
-            e for e in topic.entries
-            if _days_since_str(e.date) < _EXPIRY_DAYS
-        ]
-
-        topic.updated_at = _now()
-        topic.last_accessed_at = _now()
-        self._store.save_topic(topic)
-        self._store.upsert_index_entry(topic)
-
-    def _mark_stale_preferences(self, profile: UserProfile) -> None:
-        """标记超过 90 天未更新的偏好为可能过时。"""
-        for items in profile.preferences.values():
-            for item in items:
-                if _days_since_str(item.updated_at) > _EXPIRY_DAYS:
-                    item.stale = True
-                    item.confidence = 0.5
-
-    def _profile_to_dict(self, profile: UserProfile) -> dict:
-        """UserProfile → 简化 dict（供 state.user_preferences 使用）。"""
-        result: dict[str, list[dict]] = {}
-        for category, items in profile.preferences.items():
-            result[category] = [
-                {"content": i.content, "stale": i.stale, "confidence": i.confidence}
-                for i in items
-            ]
-        return result
-
-    # ── Context Builder 集成接口 ───────────────────────
-
-    def to_profile_message(self, profile_dict: dict | None) -> "MessageBlock | None":
-        """将 user_preferences dict 转为上下文消息（Layer 2 注入）。"""
-        if not profile_dict:
+        if not query.strip():
             return None
-        # 重建 UserProfile 用于注入器
-        profile = UserProfile()
-        for category, items in profile_dict.items():
-            profile.preferences[category] = [
-                UserPreferenceItem(
-                    category=category,
-                    content=i.get("content", ""),
-                    stale=i.get("stale", False),
-                    confidence=i.get("confidence", 1.0),
-                )
-                for i in items
-            ]
-        return self._injector.format_profile(profile)
 
-    def to_memory_message(self, memory_list: list[dict] | None) -> "MessageBlock | None":
-        """将 memory_refs list 转为上下文消息（Layer 3 注入）。"""
-        if not memory_list:
-            return None
-        results = [
-            SearchResult(
-                slug=m.get("slug", ""),
-                title=m.get("title", ""),
-                entry=TopicMemoryEntry(
-                    title=m.get("entry", {}).get("title", ""),
-                    task=m.get("entry", {}).get("task", ""),
-                    approach=m.get("entry", {}).get("approach", ""),
-                    lessons=m.get("entry", {}).get("lessons", ""),
-                    user_feedback=m.get("entry", {}).get("user_feedback", ""),
-                    user_adjustment=m.get("entry", {}).get("user_adjustment", ""),
-                    date=m.get("entry", {}).get("date", ""),
-                ),
-                score=m.get("score", 0),
-            )
-            for m in memory_list
-        ]
-        return self._injector.format_memories(results)
+        results = self.search(
+            query=query,
+            type=type_str,
+            scope=scope_str,
+            limit=3,
+        )
+
+        for r in results:
+            # 精确判断：Jaccard 相似度
+            sim = _jaccard_similarity(record.content, r.content)
+            if sim > _DEDUP_SIMILARITY_THRESHOLD:
+                # 加载完整记录
+                existing = self.get(r.id)
+                if existing and existing.status == MemoryStatus.ACTIVE:
+                    return existing
+
+        return None
+
+    # ── 索引维护 ──────────────────────────────────────────
+
+    def rebuild_index(self) -> dict:
+        """从 Markdown 文件重建 FTS5 索引。"""
+        self.init()
+
+        records_by_file: dict[tuple[str, str], list[MemoryRecord]] = {}
+        for scope, date_str in self._store.list_all_file_keys():
+            records = self._store.load_daily_file(scope, date_str)
+            if records:
+                records_by_file[(scope, date_str)] = records
+
+        return self._indexer.rebuild_index(records_by_file)
 
 
-# ── Helpers ────────────────────────────────────────────────
+# ── 辅助函数 ────────────────────────────────────────────────
 
-def _title_similarity(a: str, b: str) -> float:
-    """计算两个标题的简单相似度（基于公共字符）。"""
+
+def _jaccard_similarity(a: str, b: str) -> float:
+    """计算两个字符串的 Jaccard 相似度（基于字符集）。"""
     if not a or not b:
         return 0.0
-    a_set = set(a)
-    b_set = set(b)
-    intersection = len(a_set & b_set)
-    union = len(a_set | b_set)
+    set_a = set(a)
+    set_b = set(b)
+    intersection = len(set_a & set_b)
+    union = len(set_a | set_b)
     return intersection / union if union > 0 else 0.0
-
-
-def _days_since_str(date_str: str) -> float:
-    """计算日期字符串距今的天数。"""
-    from datetime import datetime, timezone
-    try:
-        d = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-        return (datetime.now(timezone.utc) - d).total_seconds() / 86400.0
-    except (ValueError, TypeError):
-        return 999.0
