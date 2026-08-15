@@ -26,7 +26,7 @@
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { height:100%; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
 
-  .app { display:flex; height:100vh; }
+  .app { display:flex; height:100vh; overflow:hidden; }
 
   .sidebar {
     width: 300px; min-width: 300px; background: var(--sidebar-bg);
@@ -78,7 +78,7 @@
   .status-dot { width:7px; height:7px; border-radius:50%; background:var(--success); }
   .status-dot.disconnected { background:var(--error); }
 
-  .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .main { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; }
 
   .chat-header {
     padding:16px 24px; border-bottom:1px solid var(--border);
@@ -344,7 +344,10 @@
     gap:12px !important;
     width:100% !important;
     padding:10px !important;
-    overflow: visible !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    /* 允许 flex 项收缩到内容高度以下，避免撑高父容器导致整页滚动 */
+    min-height: 0 !important;
     /* 新增：父容器开启定位，拦截子元素absolute乱飞 */
     position: relative !important;
 }
@@ -400,7 +403,7 @@
         <span id="sessionStatusText" style="font-size:12px;color:var(--text-muted);margin-left:4px;"></span>
       </div>
       <div style="display:flex;gap:6px;">
-        <button class="btn btn-warning btn-sm" id="btnPause" style="display:none;" title="暂停执行">⏸ 暂停</button>
+        <button class="btn btn-warning btn-sm" id="btnPause" style="display:none;" title="请求在安全边界暂停">⏸ 请求暂停</button>
         <button class="btn btn-success btn-sm" id="btnResume" style="display:none;" title="恢复执行">▶ 恢复</button>
         <button class="btn btn-sm" id="btnToggleSidebar">☰ 会话</button>
       </div>
@@ -552,6 +555,7 @@
   var sessions = [];
   var isStreaming = false;
   var currentSSEReader = null;  // 用于中断 SSE 连接
+  var stopRequested = false;     // 用户点击「停止」后置位，阻止 readSSEStream 自动重连
   var streamBuffer = '';         // 当前流式累积文本
   var currentStreamAgent = '';   // 当前流式来源 Agent 名称
   var phaseSections = {};        // 对象映射: phaseId → phaseSection（用于 O(1) 查找和复用）
@@ -659,44 +663,137 @@
   }
 
   // ── SSE streaming ────────────────────────────
+  // 后端每 15s 发一次心跳（event: heartbeat, data: {}），据此判定断线
+  var SSE_HEARTBEAT_TIMEOUT = 45000;  // 45s 无任何数据视为连接中断
+  var SSE_MAX_RECONNECT = 5;          // 断线后最大重连次数
+  var SSE_RECONNECT_DELAY = 1500;     // 重连基础间隔（ms）
+
+  function sleep(ms) {
+    return new Promise(function(r) { setTimeout(r, ms); });
+  }
+
+  // 解析并分发单个 SSE 事件块（空行分隔）；返回 'terminal' / 'continue' / 'ignore'
+  async function dispatchSSEBlock(block, onFinalAnswer) {
+    var dataLines = [];
+    var lines = block.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].replace(/\r$/, '');
+      if (line === '') continue;
+      if (line[0] === ':') continue;                 // 忽略注释行
+      if (line.indexOf('data:') === 0) {
+        var d = line.slice(5);
+        if (d[0] === ' ') d = d.slice(1);            // 规范：去除一个前导空格
+        dataLines.push(d);
+      }
+      // event:/id:/retry: 行忽略 —— 事件名从 data JSON 内部读取
+    }
+    var data = dataLines.join('\n');
+    if (!data || data === '{}') return 'ignore';     // 心跳 / 空事件
+    var msg;
+    try { msg = JSON.parse(data); }
+    catch (parseErr) { console.warn('[SSE] JSON parse error:', parseErr, data.slice(0, 200)); return 'ignore'; }
+    await handleSSEEvent(msg, onFinalAnswer);
+    return (msg.event === 'execution_complete' || msg.event === 'error') ? 'terminal' : 'continue';
+  }
+
+  // 建立并维持 SSE 长连接；收到终端事件后返回，中途断线自动重连
   async function readSSEStream(onFinalAnswer) {
     if (currentSSEReader) {
       try { currentSSEReader.cancel(); } catch(e) {}
       currentSSEReader = null;
     }
-    var sseResp = await fetch(BASE + '/acp/events?session_id=' + encodeURIComponent(activeSessionId));
-    var reader = sseResp.body.getReader();
-    currentSSEReader = reader;
+
     var decoder = new TextDecoder();
-    var buffer = '';
+    var reconnectCount = 0;
 
     while (true) {
-      var readResult;
+      var sawTerminal = false;
+      var timedOut = false;
+      var reader = null;
+
       try {
-        readResult = await reader.read();
+        var sseResp = await fetch(BASE + '/acp/events?session_id=' + encodeURIComponent(activeSessionId));
+        reader = sseResp.body.getReader();
       } catch(e) {
+        console.warn('[SSE] connect failed:', e);
+      }
+
+      if (!reader) {
+        // 建立连接失败：稍后重试
+        if (stopRequested) break;
+        reconnectCount++;
+        if (reconnectCount > SSE_MAX_RECONNECT) { addEvent('error', '无法连接服务器，请检查后端是否运行'); break; }
+        await sleep(SSE_RECONNECT_DELAY * reconnectCount);
+        continue;
+      }
+
+      currentSSEReader = reader;
+      var buffer = '';
+      var blockLines = [];
+
+      // 内层读循环：逐块读取，心跳超时或流结束即退出
+      while (true) {
+        var readResult = null;
+        var timer = null;
+        try {
+          readResult = await Promise.race([
+            reader.read(),
+            new Promise(function(_, reject) {
+              timer = setTimeout(function() { reject(new Error('SSE heartbeat timeout')); }, SSE_HEARTBEAT_TIMEOUT);
+            }),
+          ]);
+        } catch(e) {
+          if (e && e.message === 'SSE heartbeat timeout') timedOut = true;
+          break;
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+
+        if (readResult.done) break;
+        buffer += decoder.decode(readResult.value, { stream: true });
+
+        // 按行解析；空行作为事件块分隔符（兼容 \n 与 \r\n）
+        var lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i].replace(/\r$/, '');
+          if (line === '') {
+            if (blockLines.length) {
+              if (await dispatchSSEBlock(blockLines.join('\n'), onFinalAnswer) === 'terminal') sawTerminal = true;
+              blockLines = [];
+            }
+          } else {
+            blockLines.push(line);
+          }
+        }
+      }
+
+      // 流结束时冲刷未以空行结尾的残余事件块（防御性）
+      if (blockLines.length) {
+        if (await dispatchSSEBlock(blockLines.join('\n'), onFinalAnswer) === 'terminal') sawTerminal = true;
+        blockLines = [];
+      }
+
+      // 清理本连接
+      try { reader.cancel(); } catch(e) {}
+      if (currentSSEReader === reader) currentSSEReader = null;
+
+      if (sawTerminal) break;   // 正常结束
+      if (stopRequested) break; // 用户主动停止，不再重连
+
+      // 未收到终端事件即断线 → 重连续收后续事件
+      reconnectCount++;
+      if (reconnectCount > SSE_MAX_RECONNECT) {
+        addEvent('error', '连接中断，已尝试 ' + SSE_MAX_RECONNECT + ' 次仍无法恢复');
         break;
       }
-      if (readResult.done) break;
-      buffer += decoder.decode(readResult.value, { stream: true });
-      var lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (var i = 0; i < lines.length; i++) {
-        var line = lines[i];
-        if (line.indexOf('data:') !== 0) continue;
-        var data = line.slice(5).trim();
-        if (!data || data === '{}') continue;
-        try {
-          var msg = JSON.parse(data);
-          await handleSSEEvent(msg, onFinalAnswer);
-        } catch(parseErr) { console.warn('[SSE] JSON parse error:', parseErr, data.slice(0, 200)); }
-      }
+      addEvent('phase', timedOut ? '连接超时，正在重连…' : '连接断开，正在重连…');
+      await sleep(SSE_RECONNECT_DELAY * reconnectCount);
     }
   }
 
   async function sendMessage() {
-    resetChatPhase();
+    resetView(false);
     if (isStreaming || !activeSessionId) return;
     if (sessionStatus === 'running' || sessionStatus === 'resuming' || sessionStatus === 'awaiting_user') return;
 
@@ -707,6 +804,7 @@
     input.value = '';
     input.style.height = 'auto';
     isStreaming = true;
+    stopRequested = false;
     el('#btnSend').disabled = true;
     hideEl('#emptyState');
     updateSessionStatus('running');
@@ -909,25 +1007,28 @@
     if (status === 'running' || status === 'resuming') {
       if (btnPause) btnPause.style.display = '';
       if (btnResume) btnResume.style.display = 'none';
-      if (btnSend) btnSend.disabled = true;
-      if (inputArea) inputArea.disabled = true;
+      // 运行中：发送按钮复用为「停止」，保持可点击
+      if (btnSend) { btnSend.disabled = false; btnSend.innerHTML = '&#9632;'; btnSend.title = '停止'; }
     } else if (status === 'paused') {
       if (btnPause) btnPause.style.display = 'none';
       if (btnResume) btnResume.style.display = '';
-      if (btnSend) btnSend.disabled = true;
-      if (inputArea) inputArea.disabled = true;
+      if (btnSend) { btnSend.disabled = true; resetSendButton(); }
     } else if (status === 'awaiting_user') {
       if (btnPause) btnPause.style.display = 'none';
       if (btnResume) btnResume.style.display = 'none';
-      if (btnSend) btnSend.disabled = true;
-      if (inputArea) inputArea.disabled = true;
+      if (btnSend) { btnSend.disabled = true; resetSendButton(); }
     } else {
       // idle / completed / expired
       if (btnPause) btnPause.style.display = 'none';
       if (btnResume) btnResume.style.display = 'none';
-      if (btnSend) btnSend.disabled = (status === 'expired');
+      if (btnSend) { btnSend.disabled = (status === 'expired'); resetSendButton(); }
       if (inputArea) inputArea.disabled = (status === 'expired');
     }
+  }
+
+  function resetSendButton() {
+    var btnSend = el('#btnSend');
+    if (btnSend) { btnSend.innerHTML = '&#10132;'; btnSend.title = '发送'; }
   }
 
   async function pauseSession() {
@@ -944,14 +1045,35 @@
     }
   }
 
+  // 停止：中断编排并立即终止当前 SSE 连接
+  async function stopSession() {
+    if (!activeSessionId) return;
+    try {
+      await apiCall({
+        version: '1.0', type: 'request', event: 'interrupt',
+        id: randId(), timestamp: new Date().toISOString(),
+        payload: { session_id: activeSessionId },
+      });
+      addEvent('phase', '停止信号已发送，正在结束本次执行...');
+    } catch(e) {
+      console.error('[stopSession] error:', e);
+    }
+    stopRequested = true;
+    if (currentSSEReader) {
+      try { currentSSEReader.cancel(); } catch(e) { /* ignore */ }
+      currentSSEReader = null;
+    }
+    isStreaming = false;
+    updateSessionStatus('idle');
+  }
+
   async function resumeSession() {
     if (!activeSessionId || isStreaming) return;
     isStreaming = true;
+    stopRequested = false;
 
     addEvent('phase', '正在恢复执行...');
-    streamBuffer = '';
-    currentStreamAgent = '';
-    clearPhaseSections();
+    // M2.4：恢复执行不再清空已渲染的阶段卡片，只续接新事件
     updateSessionStatus('resuming');
 
     try {
@@ -1017,7 +1139,7 @@
     return phaseSections[phaseId] || null;
   }
 
-  async function createPhaseSection(label, agentName) {
+  async function createPhaseSection(label, agentName, phaseIdOverride) {
     // ── DOM 渲染锁：等待上一阶段完成渲染后再创建新阶段 ──
     while (domRenderLock) {
       await new Promise(function(r) { setTimeout(r, 30); });
@@ -1025,7 +1147,7 @@
     domRenderLock = true;
 
     var container = el('#chatMessages');
-    var phaseId = getPhaseId(label);
+    var phaseId = phaseIdOverride || getPhaseId(label);
 
     // 优先复用同类型阶段（无论之前是 completed 还是 running 状态）
     var existing = findPhaseSection(phaseId);
@@ -1182,53 +1304,48 @@
     scrollToBottom();
   }
 
-  function resetChatPhase() {
-    // 1. 物理删除页面上所有阶段 DOM 节点（防止残留 DOM 导致新旧卡片重叠）
-    var allPhaseNodes = document.querySelectorAll('.phase-section');
-    for (var i = 0; i < allPhaseNodes.length; i++) {
-      allPhaseNodes[i].remove();
+  // 统一的视图清理函数：
+  //   clearMessages=false —— 发送前：清空阶段卡片/工具，最终结果转为持久气泡保留
+  //   clearMessages=true  —— 切换会话：额外清空 user/agent 气泡与事件卡片
+  function resetView(clearMessages) {
+    var container = el('#chatMessages');
+
+    // 1. 处理最终结果块：发送前转为持久 agent 气泡保留；切换会话直接删除
+    var oldFinal = container.querySelector('.final-result');
+    if (oldFinal) {
+      if (!clearMessages) {
+        var bodyEl = oldFinal.querySelector('.final-result-body');
+        if (bodyEl && bodyEl.innerHTML) {
+          var msgDiv = document.createElement('div');
+          msgDiv.className = 'message agent';
+          msgDiv.innerHTML = '<div class="message-avatar">🤖</div>' +
+            '<div class="message-bubble">' + bodyEl.innerHTML + '</div>';
+          container.insertBefore(msgDiv, oldFinal);
+        }
+      }
+      oldFinal.remove();
     }
-    // 2. 删除内联工具调用节点
-    var allToolNodes = document.querySelectorAll('.inline-tool');
-    for (var j = 0; j < allToolNodes.length; j++) {
-      allToolNodes[j].remove();
+
+    // 2. 删除阶段卡片
+    var phaseNodes = container.querySelectorAll('.phase-section');
+    for (var i = 0; i < phaseNodes.length; i++) phaseNodes[i].remove();
+    // 3. 删除内联工具节点
+    var toolNodes = container.querySelectorAll('.inline-tool');
+    for (var j = 0; j < toolNodes.length; j++) toolNodes[j].remove();
+
+    if (clearMessages) {
+      // 4. 删除对话气泡与事件卡片
+      var msgNodes = container.querySelectorAll('.message, .event-card');
+      for (var k = 0; k < msgNodes.length; k++) msgNodes[k].remove();
     }
-    // 3. 删除旧的最终结果块
-    var oldFinal = document.querySelector('.final-result');
-    if (oldFinal) { oldFinal.remove(); }
-    // 4. 重置全部全局状态变量
+
+    // 5. 重置全局状态变量
     phaseSections = {};
     currentPhaseId = null;
     streamBuffer = '';
     currentStreamAgent = '';
     streamRenderPending = false;
     domRenderLock = false;
-  }
-
-  function clearPhaseSections() {
-    var container = el('#chatMessages');
-    // Convert the existing final-result into a persistent agent message bubble
-    var oldFinal = container.querySelector('.final-result');
-    if (oldFinal) {
-      var bodyEl = oldFinal.querySelector('.final-result-body');
-      if (bodyEl && bodyEl.innerHTML) {
-        var msgDiv = document.createElement('div');
-        msgDiv.className = 'message agent';
-        msgDiv.innerHTML = '<div class="message-avatar">🤖</div>' +
-          '<div class="message-bubble">' + bodyEl.innerHTML + '</div>';
-        container.insertBefore(msgDiv, oldFinal);
-      }
-      oldFinal.remove();
-    }
-    // Remove previous turn's phase sections and inline tools
-    var oldNodes = container.querySelectorAll('.phase-section, .inline-tool');
-    for (var i = 0; i < oldNodes.length; i++) {
-      oldNodes[i].remove();
-    }
-    // Reset phase state: clear object map and current tracking
-    phaseSections = {};
-    currentPhaseId = null;
-    streamRenderPending = false;
   }
 
   // ── UI: Sessions ──────────────────────────────
@@ -1259,19 +1376,92 @@
   }
 
 
-  function clearChatMessages() {
-    resetChatPhase();
-    var container = el('#chatMessages');
-    var nodes = container.querySelectorAll('.message, .event-card');
-    for (var i = 0; i < nodes.length; i++) {
-      nodes[i].remove();
-    }
-  }
-
   function showEl(sel) { var e = el(sel); if (e) e.style.display = ''; }
   function hideEl(sel) { var e = el(sel); if (e) e.style.display = 'none'; }
   function showFlex(sel) { var e = el(sel); if (e) e.style.display = 'flex'; }
   function showBlock(sel) { var e = el(sel); if (e) e.style.display = 'block'; }
+
+  // 历史消息 message_type → 阶段标签 映射（用于还原完整编排过程）
+  var HISTORY_PHASE_LABELS = {
+    guard_intent_analysis: '意图分析',
+    guard_plan_review: '方案审核',
+    plan_proposal: '方案制定',
+    plan_task_dispatch: '任务派发',
+    plan_result_synthesis: '结果汇总',
+  };
+
+  // 将阶段卡片标记为已完成（折叠），用于历史渲染
+  function completePhaseSection(ps) {
+    if (!ps || ps.isCompleted) return;
+    ps.isCompleted = true;
+    ps.status = 'completed';
+    var icon = ps.element.querySelector('.phase-status-icon');
+    if (icon) icon.className = 'phase-status-icon completed';
+    var st = ps.element.querySelector('.phase-status-text');
+    if (st) st.textContent = '已完成';
+    var hint = ps.element.querySelector('.phase-hint');
+    if (hint) hint.classList.add('collapsed-phase-hint');
+    ps.bodyEl.classList.add('collapsed');
+    ps.element.classList.add('collapsed');
+    var tg = ps.element.querySelector('.phase-toggle-icon');
+    if (tg) tg.textContent = '▶';
+  }
+
+  // 按 message_type 还原单条历史消息（idx 用于生成唯一 phaseId，避免多轮同名阶段互相覆盖）
+  async function renderHistoryMessage(m, idx) {
+    var content = extractTextContent(m.content);
+    var type = m.message_type || '';
+
+    // 用户输入 / 最终答案 → 对话气泡
+    if (type === 'user_input' || type === 'UserInput') {
+      if (content) addMessage('user', content);
+      return;
+    }
+    if (type === 'final_answer' || type === 'FinalAnswer') {
+      if (content) addMessage('agent', content);
+      return;
+    }
+
+    // 系统级注入不展示
+    if (type === 'system_prompt' || type === 'system_notification' ||
+        type === 'system_memory_profile' || type === 'system_memory_topic') {
+      return;
+    }
+
+    // 工具调用 / 返回 → 内联工具行（无活跃阶段时退化为事件卡片）
+    if (type === 'tool_call' || type === 'ToolCall') {
+      var toolName = (m.metadata && m.metadata.tool_name) || m.name || 'unknown';
+      addInlineTool('调用', toolName);
+      return;
+    }
+    if (type === 'tool_result' || type === 'ToolResult') {
+      addInlineTool('返回', content ? content.slice(0, 200) : '');
+      return;
+    }
+
+    // 用户中断 / 反馈 → 事件卡片
+    if (type === 'user_interrupt' || type === 'user_feedback') {
+      addEvent('phase', type === 'user_interrupt' ? '用户请求中断' : (content || '用户反馈'));
+      return;
+    }
+
+    // 阶段类消息 → 阶段卡片（guard / plan / subagent）
+    var label = HISTORY_PHASE_LABELS[type];
+    var agentName = m.name || '';
+    if (!label && type === 'subagent_task_result') {
+      var tid = m.metadata && m.metadata.task_id;
+      label = tid ? ('执行子任务 [' + tid + ']') : '任务执行';
+    }
+    if (!label) label = agentName || 'Agent';
+
+    var uniqueId = getPhaseId(label) + '-hist-' + idx;
+    var ps = findPhaseSection(uniqueId);
+    if (!ps) ps = await createPhaseSection(label, agentName, uniqueId);
+    ps.content = content;
+    ps.contentEl.innerHTML = simpleMarkdown(content);
+    completePhaseSection(ps);
+    currentPhaseId = null;
+  }
 
   async function switchSession(sid) {
     if (activeSessionId === sid) return;
@@ -1283,7 +1473,7 @@
       return;
     }
     activeSessionId = sid;
-    clearChatMessages();
+    resetView(true);
     hideEl('#emptyState');
     showFlex('#chatHeader');
     showBlock('#chatInputArea');
@@ -1295,20 +1485,21 @@
     }
     isStreaming = false;
 
-    // Fetch and display historical messages with status
+    // 拉取历史消息 + 状态（单一数据源：/messages）
+    var title = '会话';
+    var turnCount = 0;
+    var firstUserInput = null;
     try {
       var resp = await fetch(BASE + '/acp/sessions/' + encodeURIComponent(sid) + '/messages');
       var data = await resp.json();
+      turnCount = data.turn_count || 0;
       if (data.messages) {
         for (var i = 0; i < data.messages.length; i++) {
           var m = data.messages[i];
-          var content = extractTextContent(m.content);
-          if (!content) continue;
-          if (m.message_type === 'user_input' || m.message_type === 'UserInput') {
-            addMessage('user', content);
-          } else if (m.message_type === 'final_answer' || m.message_type === 'FinalAnswer') {
-            addMessage('agent', content);
+          if (!firstUserInput && (m.message_type === 'user_input' || m.message_type === 'UserInput')) {
+            firstUserInput = extractTextContent(m.content);
           }
+          await renderHistoryMessage(m, i);
         }
       }
       // 恢复会话状态
@@ -1327,12 +1518,18 @@
       updateSessionStatus('idle');
     }
 
-    var s = null;
-    for (var i = 0; i < sessions.length; i++) {
-      if (sessions[i].session_id === sid) { s = sessions[i]; break; }
+    // 会话标题：首条用户输入 > 列表 preview > 兜底（消除对 sessions 缓存的空值依赖）
+    if (firstUserInput) {
+      title = firstUserInput.replace(/\s+/g, ' ').trim().slice(0, 20) || '会话';
+    } else {
+      var s = null;
+      for (var j = 0; j < sessions.length; j++) {
+        if (sessions[j].session_id === sid) { s = sessions[j]; break; }
+      }
+      if (s && s.preview) title = s.preview;
     }
-    el('#chatTitle').textContent = s ? (s.preview || '会话') : '会话';
-    el('#chatMeta').textContent = '会话ID: ' + sid.slice(0,12) + '… · ' + (s ? s.turn_count : 0) + ' 轮对话';
+    el('#chatTitle').textContent = title;
+    el('#chatMeta').textContent = '会话ID: ' + sid.slice(0,12) + '… · ' + turnCount + ' 轮对话';
     renderSessionList();
     el('#userInput').focus();
     setStatus(true, '已连接');
@@ -1346,7 +1543,7 @@
       currentSSEReader = null;
     }
     isStreaming = false;
-    clearChatMessages();
+    resetView(true);
     showFlex('#emptyState');
     hideEl('#chatHeader');
     hideEl('#chatInputArea');
@@ -1356,6 +1553,7 @@
 
   // ── UI: Input ─────────────────────────────────
   function handleKeyDown(e) {
+    if (e.isComposing || e.keyCode === 229) return; // 输入法组合中，不触发发送
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
@@ -1468,6 +1666,7 @@
         submitReply(text, null);
       });
       replyInput.addEventListener('keydown', function(e) {
+        if (e.isComposing || e.keyCode === 229) return; // 输入法组合中，不触发发送
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
           var text = replyInput.value.trim();
@@ -1509,6 +1708,21 @@
         return false;
       }
       updateSessionStatus('running');
+      // M1.1：ask_user 触发后连接通常仍存活，无需重开；
+      // 仅当旧连接已断开（currentSSEReader 已被清理）时才重建 SSE 流，
+      // 避免误取消仍在等待事件的活跃 reader。
+      if (!currentSSEReader) {
+        isStreaming = true;
+        stopRequested = false;
+        readSSEStream(function(c) { createFinalResult(c); }).finally(function() {
+          isStreaming = false;
+          currentSSEReader = null;
+          if (sessionStatus === 'running' || sessionStatus === 'resuming') {
+            updateSessionStatus('idle');
+          }
+          listSessions();
+        });
+      }
       return true;
     } catch(e) {
       console.error('[submitReply] error:', e);
@@ -1541,7 +1755,13 @@
     // Wire up buttons via addEventListener (not inline onclick)
     el('#btnNewSession').addEventListener('click', createSession);
     el('#btnNewSessionEmpty').addEventListener('click', createSession);
-    el('#btnSend').addEventListener('click', sendMessage);
+    el('#btnSend').addEventListener('click', function() {
+      if (sessionStatus === 'running' || sessionStatus === 'resuming') {
+        stopSession();
+      } else {
+        sendMessage();
+      }
+    });
     el('#btnToggleSidebar').addEventListener('click', toggleSidebar);
     el('#btnPause').addEventListener('click', pauseSession);
     el('#btnResume').addEventListener('click', resumeSession);
